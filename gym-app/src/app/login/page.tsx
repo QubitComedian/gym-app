@@ -3,9 +3,8 @@
 import { supabaseBrowser } from '@/lib/supabase/client';
 
 export default function LoginPage() {
-  const supabase = supabaseBrowser();
-
   async function signInWithGoogle() {
+    const supabase = supabaseBrowser();
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
