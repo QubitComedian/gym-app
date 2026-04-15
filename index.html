@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0a0a">
+<title>Gym</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #161616;
+    --panel-2: #1f1f1f;
+    --border: #2a2a2a;
+    --text: #f5f5f5;
+    --muted: #8a8a8a;
+    --accent: #d4ff3a;
+    --accent-dim: #334a0f;
+    --danger: #ff5a5a;
+    --ok: #4ade80;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, "SF Pro Text", sans-serif;
+    font-size: 16px; line-height: 1.4;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    min-height: 100vh;
+  }
+  input, button, textarea, select { font: inherit; color: inherit; }
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Layout */
+  .app { max-width: 560px; margin: 0 auto; padding: 12px 14px 110px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 2px 14px; }
+  h1 { font-size: 22px; margin: 0; font-weight: 700; letter-spacing: -0.5px; }
+  .sub { color: var(--muted); font-size: 13px; }
+
+  /* Tab bar */
+  nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(14,14,14,0.92);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border); display: flex; justify-content: space-around;
+    padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); z-index: 100; }
+  nav.tabs button { flex: 1; background: none; border: 0; color: var(--muted);
+    padding: 6px 4px; font-size: 11px; letter-spacing: 0.3px; display: flex;
+    flex-direction: column; align-items: center; gap: 4px; cursor: pointer; }
+  nav.tabs button.active { color: var(--accent); }
+  nav.tabs .ic { font-size: 20px; line-height: 1; }
+
+  /* Cards */
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px; margin-bottom: 12px; }
+  .card h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+  .card .pres { color: var(--muted); font-size: 13px; }
+
+  /* Exercise rows */
+  .ex-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .ex-head .nm { font-size: 17px; font-weight: 600; }
+  .ex-head .tgt { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .notes { color: var(--muted); font-size: 12px; margin-top: 6px; font-style: italic; }
+
+  .sets { margin-top: 10px; display: grid; gap: 6px; }
+  .setrow { display: grid; grid-template-columns: 26px 1fr 1fr 1fr 28px; gap: 6px; align-items: center; }
+  .setrow .sn { color: var(--muted); font-size: 12px; text-align: center; }
+  .setrow input, .setrow select { background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 8px; width: 100%; text-align: center; font-size: 15px; }
+  .setrow input:focus, .setrow select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .setrow .hint { position: relative; }
+  .setrow .hint .h { position: absolute; bottom: -13px; left: 0; right: 0; text-align: center;
+    font-size: 10px; color: var(--muted); pointer-events: none; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .setrow .del { background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 0; }
+  .sethead { display: grid; grid-template-columns: 26px 1fr 1fr 1fr 28px; gap: 6px;
+    font-size: 10px; color: var(--muted); letter-spacing: 0.4px; text-transform: uppercase; padding: 0 2px 4px; }
+  .addset { margin-top: 18px; background: var(--panel-2); border: 1px dashed var(--border);
+    border-radius: 8px; padding: 8px; width: 100%; color: var(--muted); cursor: pointer; font-size: 13px; }
+
+  .lastline { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; }
+  .lastline b { color: var(--text); font-weight: 500; }
+
+  /* Buttons */
+  .btn { background: var(--accent); color: #0b0b0b; font-weight: 600; border: 0;
+    border-radius: 12px; padding: 14px; width: 100%; font-size: 16px; cursor: pointer; }
+  .btn.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .btn.small { padding: 8px 12px; font-size: 13px; width: auto; }
+  .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+
+  /* Session meta */
+  .sent { display: flex; gap: 6px; margin-top: 6px; }
+  .sent button { flex: 1; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px; color: var(--text); cursor: pointer; font-size: 18px; }
+  .sent button.active { background: var(--accent-dim); border-color: var(--accent); }
+
+  textarea { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px; width: 100%; min-height: 70px; resize: vertical; color: var(--text); font-size: 14px; }
+
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px;
+    letter-spacing: 0.3px; text-transform: uppercase; }
+
+  /* Day picker */
+  .daypicker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+  .daypicker button { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .daypicker button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
+
+  /* History */
+  .h-item { padding: 10px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .h-item:last-child { border-bottom: 0; }
+  .h-item .d { font-size: 13px; color: var(--muted); }
+  .h-item .n { font-size: 15px; font-weight: 500; margin-top: 2px; }
+  .h-item .s { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+  /* Exercise pref */
+  .ex-pref { display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .ex-pref:last-child { border-bottom: 0; }
+  .ex-pref .status { font-size: 11px; padding: 3px 8px; border-radius: 20px;
+    background: var(--panel-2); color: var(--muted); }
+  .ex-pref .status.banned { background: rgba(255,90,90,0.15); color: var(--danger); }
+  .ex-pref .status.liked { background: rgba(74,222,128,0.15); color: var(--ok); }
+
+  /* Modal */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
+    align-items: flex-end; justify-content: center; z-index: 200; }
+  .modal.show { display: flex; }
+  .modal .sheet { background: var(--panel); border-radius: 18px 18px 0 0; width: 100%;
+    max-width: 560px; padding: 18px 14px calc(20px + env(safe-area-inset-bottom));
+    max-height: 85vh; overflow-y: auto; }
+  .modal h3 { margin: 0 0 10px; font-size: 18px; }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 14px; }
+
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px;
+    background: var(--accent-dim); color: var(--accent); letter-spacing: 0.4px; }
+  .pill.muted { background: var(--panel-2); color: var(--muted); }
+
+  /* Rest timer */
+  .timer { position: fixed; bottom: 80px; right: 14px; background: var(--accent);
+    color: #0a0a0a; padding: 10px 14px; border-radius: 24px; font-weight: 600;
+    font-size: 14px; display: none; align-items: center; gap: 8px;
+    box-shadow: 0 8px 24px rgba(212,255,58,0.3); z-index: 90; cursor: pointer; }
+  .timer.show { display: flex; }
+
+  .muted-text { color: var(--muted); font-size: 12px; }
+  hr.soft { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div>
+      <h1 id="page-title">Today</h1>
+      <div class="sub" id="page-sub"></div>
+    </div>
+    <div class="pill" id="top-pill"></div>
+  </header>
+
+  <main id="view"></main>
+</div>
+
+<div class="timer" id="timer" onclick="stopTimer()"><span id="timer-t">0:00</span></div>
+
+<nav class="tabs">
+  <button data-tab="today" class="active"><span class="ic">▸</span>Today</button>
+  <button data-tab="history"><span class="ic">≡</span>History</button>
+  <button data-tab="exercises"><span class="ic">✦</span>Exercises</button>
+  <button data-tab="settings"><span class="ic">⚙</span>Settings</button>
+</nav>
+
+<div class="modal" id="modal"><div class="sheet" id="modal-body"></div></div>
+
+<script>
+/* ============================================================
+   DATA: program, exercise library, seeded history from your log
+   ============================================================ */
+
+const DAYS = ['A', 'B', 'C', 'D']; // rotation order
+const DAY_NAMES = {
+  A: 'Push — Chest / Shoulders / Triceps',
+  B: 'Pull — Back / Biceps',
+  C: 'Legs',
+  D: 'Shoulders + Arms'
+};
+
+// Program: ordered exercises per day, with prescription.
+// Units: 'lb' for weights, rir = reps in reserve (0 = to failure).
+const PROGRAM = {
+  A: [
+    { id: 'incline_db_press', name: 'Incline DB Press', sets: 4, repRange: '8–10', weightHint: '25–30 lb', notes: '45° incline. 2-sec descent. Feel upper chest, not shoulders. If 10 clean reps on last set → go up next session.' },
+    { id: 'flat_db_press', name: 'Flat DB Press', sets: 3, repRange: '10–12', weightHint: '25 lb', notes: 'Slight arch, drive up to lockout. Alternative: cable chest fly.' },
+    { id: 'seated_db_ohp', name: 'Seated DB Overhead Press', sets: 4, repRange: '8–10', weightHint: '25 lb', notes: 'Take the full 2 min rest. No shrugging. Primary shoulder mass builder.' },
+    { id: 'db_lateral_raise', name: 'DB Lateral Raise', sets: 4, repRange: '12–15', weightHint: '10–12.5 lb', notes: 'Use DBs (cable minimum is too light). Lead with elbow. Stop at shoulder height. No momentum.' },
+    { id: 'face_pull', name: 'Face Pull', sets: 3, repRange: '15', weightHint: '25 lb', notes: 'Elbows high. Pull to face level. Externally rotate at end. Rear delt + posture.' },
+    { id: 'tricep_pressdown', name: 'Tricep Pressdown', sets: 3, repRange: '12–15', weightHint: '40–45 lb', notes: 'Elbows pinned. Full extension. Superset with face pull if tight on time.' },
+    { id: 'hanging_knee_raise', name: 'Hanging Knee Raise', sets: 3, repRange: '10–12', weightHint: 'BW', notes: 'Progress toward straight-leg raise. Watch forearm grip (known limiter).' },
+  ],
+  B: [
+    { id: 'pull_ups_emom', name: 'Pull-Ups — EMOM', sets: 10, repRange: '2/min', weightHint: 'BW', notes: 'Every minute on the minute for 10 min. 2 strict reps/min. If 2/min feels easy → bump to 3/min or 12 min.' },
+    { id: 'neutral_pulldown', name: 'Neutral Grip Lat Pulldown', sets: 4, repRange: '8–10', weightHint: '85–95 lb', notes: 'Full stretch at top. Pull to upper chest. Don\'t rock body.' },
+    { id: 'chest_supported_row', name: 'Chest Supported DB Row', sets: 4, repRange: '10', weightHint: '30–35 lb', notes: '30 lb felt easy last time — try 35 lb first set. Shoulder blades retract first, then arms pull.' },
+    { id: 'single_arm_row', name: 'Single-Arm Cable Row', sets: 3, repRange: '10/side', weightHint: '40–50 lb', notes: 'Brace core. Row to hip. Don\'t rotate torso.' },
+    { id: 'incline_db_curl', name: 'Incline DB Curl', sets: 3, repRange: '8–10', weightHint: '17.5–20 lb', notes: 'Long head stretch. 20 lb has been failure territory — 17.5 may give cleaner reps. Full hang, slow up, squeeze.' },
+    { id: 'hammer_curl', name: 'Hammer Curl', sets: 2, repRange: '10–12', weightHint: '17.5–20 lb', notes: 'Brachialis. Neutral grip. No swing.' },
+    { id: 'side_plank', name: 'Side Plank', sets: 2, repRange: '60s/side', weightHint: '—', notes: 'Hips stacked. Add hip-dip variation if easy.' },
+  ],
+  C: [
+    { id: 'ffe_split_squat', name: 'Front-Foot Elevated Split Squat', sets: 4, repRange: '8/leg', weightHint: '40 lb total', notes: 'Front foot on 4–6" platform. Back knee straight down. Front knee tracks 2nd toe. Full depth, trunk upright.' },
+    { id: 'sl_rdl', name: 'Single-Leg RDL', sets: 3, repRange: '10', weightHint: '40–60 lb', notes: 'Replaces conventional RDL (which you dislike). Balance hand on a rack post if needed. Hinge from hips, feel hamstring.' },
+    { id: 'hamstring_curl', name: 'Hamstring Curl (lying)', sets: 4, repRange: '10–12', weightHint: '70–90 lb', notes: 'Start back around 70 lb (your 2nd time on lying version). 2-sec return. Hips stay on pad.' },
+    { id: 'hip_thrust', name: 'Hip Thrust', sets: 3, repRange: '12', weightHint: '55–65 lb', notes: 'Drive hips fully up. Hard glute squeeze, 1-sec hold. Upper back on bench.' },
+    { id: 'calf_raise', name: 'Standing Calf Raise', sets: 3, repRange: '15', weightHint: '55 lb', notes: 'Full range. 3-sec eccentric. Pause at stretch. Don\'t bounce.' },
+    { id: 'hanging_knee_raise', name: 'Hanging Knee Raise', sets: 3, repRange: '10', weightHint: 'BW', notes: 'Controlled. Progress toward straight-leg.' },
+  ],
+  D: [
+    { id: 'pull_ups_quality', name: 'Pull-Ups (Quality)', sets: 3, repRange: 'max−2', weightHint: 'BW', notes: 'Strict only. Full hang. Stop 2 reps before failure. Maintains frequency without burnout.' },
+    { id: 'db_lateral_raise', name: 'Standing DB Lateral Raise', sets: 4, repRange: '12–15', weightHint: '10 lb', notes: 'Slight forward lean. Lead with elbow. Zero momentum. Shoulder caps.' },
+    { id: 'rear_delt_fly', name: 'Cable Rear Delt Fly', sets: 3, repRange: '15', weightHint: '10–15 lb', notes: 'Cross-cable or reverse pec deck. Full arc. Squeeze rear delt at end. 3D shoulder look.' },
+    { id: 'incline_db_curl', name: 'Incline DB Curl', sets: 3, repRange: '10', weightHint: '17.5–20 lb', notes: 'Full arm hang. Slow controlled curl. Squeeze hard at top.' },
+    { id: 'overhead_tricep_ext', name: 'Overhead Tricep Extension', sets: 3, repRange: '12', weightHint: '25–35 lb', notes: 'Long head. Elbows narrow. Full stretch to full lockout.' },
+    { id: 'tricep_pressdown', name: 'Tricep Pressdown', sets: 2, repRange: '12–15', weightHint: '35–45 lb', notes: 'Finisher. Lighter if arms are fried.' },
+    { id: 'ab_circuit', name: 'Ab Circuit', sets: 2, repRange: '1 round', weightHint: '—', notes: 'Plank 45s → Crunches 15 → Side plank 30s/side. 60s rest between rounds.' },
+  ]
+};
+
+/* Exercise preferences / memory.
+   status: 'banned' | 'liked' | 'neutral'
+   reason: why, so Claude (and you) remember.
+*/
+const DEFAULT_PREFS = {
+  'rdl_barbell': { name: 'Romanian Deadlift (barbell)', status: 'banned', reason: 'Hated it. Hard to feel in hamstrings, felt lower back too much. 2026-02-02: "let\'s not do anymore". Replaced with Single-Leg RDL.' },
+  'cable_lateral_raise': { name: 'Cable Lateral Raise (low stack)', status: 'banned', reason: 'Minimum weight (5 lb) is still too light for controlled reps. Use DB version instead.' },
+  'sl_rdl': { name: 'Single-Leg RDL', status: 'liked', reason: 'Replacement for barbell RDL. Works hamstring without lower-back load.' },
+  'pull_ups_emom': { name: 'Pull-Ups EMOM', status: 'liked', reason: 'Protocol is working well for building pull-up density.' },
+  'hanging_core': { name: 'Hanging core work', status: 'neutral', reason: 'Watch forearm grip fatigue — it fails before the abs do. Consider wrist straps if it keeps limiting.' }
+};
+
+/* Seeded history — the log you pasted, parsed to structured sessions.
+   Each set: { w: weight_lbs, r: reps, rir: 0|1|2|3, note: '...' }
+*/
+const SEED_HISTORY = [
+  // Apr 14 — Pull
+  { date: '2026-04-14', day: 'B', sets: {
+    pull_ups_emom: [{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3}],
+    neutral_pulldown: [{w:90,r:10,rir:2},{w:90,r:10,rir:2},{w:90,r:10,rir:1},{w:90,r:10,rir:1}],
+    chest_supported_row: [{w:30,r:10,rir:3,note:'feels too easy, no failure'},{w:30,r:10,rir:3},{w:30,r:10,rir:3},{w:30,r:10,rir:3}],
+    single_arm_row: [{w:40,r:10,rir:2},{w:40,r:10,rir:2},{w:50,r:10,rir:1}],
+    incline_db_curl: [{w:22.5,r:8,rir:0,note:'failure'},{w:20,r:6,rir:0,note:'failure on 7'},{w:17.5,r:6,rir:0,note:'failure on 7'}],
+    hammer_curl: [{w:17.5,r:12,rir:1},{w:17.5,r:12,rir:1}],
+    side_plank: [{w:0,r:60,rir:1},{w:0,r:60,rir:1}]
+  }, sentiment: 3, notes: 'Arms cooked quickly today. 30 lb chest rows too easy — bump to 35 next pull day.' },
+
+  // Apr 13 — Push
+  { date: '2026-04-13', day: 'A', sets: {
+    incline_db_press: [{w:25,r:10,rir:3},{w:25,r:10,rir:3},{w:25,r:10,rir:3},{w:30,r:10,rir:0,note:'close to failure'}],
+    flat_db_press: [{w:25,r:10,rir:2},{w:25,r:10,rir:2},{w:25,r:10,rir:2}],
+    seated_db_ohp: [{w:30,r:8,rir:0,note:'close to failure'},{w:25,r:9,rir:0},{w:25,r:8,rir:1},{w:25,r:6,rir:0,note:'failed on 7'}],
+    db_lateral_raise: [{w:12.5,r:12,rir:0},{w:10,r:14,rir:0},{w:10,r:12,rir:1},{w:10,r:10,rir:1}],
+    face_pull: [{w:25,r:15,rir:1,note:'last 3 burned'},{w:25,r:15,rir:1},{w:25,r:15,rir:1}],
+    tricep_pressdown: [{w:35,r:15,rir:2},{w:40,r:15,rir:1,note:'last 3 burned'},{w:45,r:12,rir:1}],
+    hanging_knee_raise: [{w:0,r:12,rir:2},{w:0,r:12,rir:1,note:'2 leg + 10 knee'},{w:0,r:12,rir:0,note:'forearms fail'}]
+  }, sentiment: 4, notes: 'Good push session. OHP set 1 at 30 lb felt heavy — drop back to 25 and build volume first.' },
+
+  // Apr 10 — Shoulders + Arms
+  { date: '2026-04-10', day: 'D', sets: {
+    pull_ups_quality: [{w:0,r:4,rir:2},{w:0,r:4,rir:2},{w:0,r:4,rir:2}],
+    db_lateral_raise: [{w:10,r:13,rir:1},{w:10,r:13,rir:1},{w:10,r:13,rir:1},{w:10,r:12,rir:1}],
+    rear_delt_fly: [{w:10,r:15,rir:2},{w:10,r:15,rir:2},{w:10,r:15,rir:2}],
+    incline_db_curl: [{w:20,r:10,rir:1},{w:20,r:10,rir:1},{w:20,r:10,rir:1}],
+    overhead_tricep_ext: [{w:25,r:12,rir:1},{w:25,r:12,rir:1},{w:25,r:12,rir:1}],
+    tricep_pressdown: [{w:25,r:15,rir:1,note:'tired arms'},{w:25,r:15,rir:1}]
+  }, sentiment: 4, notes: 'Light day, good volume.' },
+
+  // Apr 9 — Legs
+  { date: '2026-04-09', day: 'C', sets: {
+    ffe_split_squat: [{w:40,r:8,rir:1},{w:40,r:8,rir:1},{w:40,r:8,rir:1},{w:40,r:8,rir:0}],
+    sl_rdl: [{w:40,r:10,rir:2},{w:50,r:10,rir:1},{w:60,r:10,rir:1}],
+    hamstring_curl: [{w:65,r:12,rir:2,note:'first time on LYING curl (was doing seated before)'},{w:65,r:12,rir:1},{w:65,r:12,rir:1},{w:65,r:10,rir:0}],
+    hip_thrust: [{w:55,r:12,rir:1},{w:55,r:12,rir:1},{w:55,r:12,rir:1}],
+    calf_raise: [{w:55,r:15,rir:1},{w:55,r:15,rir:1},{w:55,r:15,rir:1}]
+  }, sentiment: 4, notes: 'Switched to lying hamstring curl — way better hamstring engagement. Reset weight on that.' },
+
+  // Apr 7 — Pull
+  { date: '2026-04-07', day: 'B', sets: {
+    pull_ups_emom: [{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3},{r:2,w:0,rir:3}],
+    neutral_pulldown: [{w:80,r:10,rir:2},{w:80,r:10,rir:2},{w:80,r:10,rir:1},{w:80,r:10,rir:1}],
+    chest_supported_row: [{w:30,r:10,rir:2},{w:30,r:10,rir:2},{w:30,r:10,rir:2},{w:30,r:10,rir:2}],
+    single_arm_row: [{w:35,r:10,rir:2},{w:35,r:10,rir:2},{w:35,r:10,rir:2}],
+    incline_db_curl: [{w:20,r:9,rir:0,note:'last rep elbow not locked'},{w:20,r:7,rir:0,note:'only 6-7'},{w:15,r:8,rir:0}],
+    hammer_curl: [{w:20,r:12,rir:1},{w:25,r:12,rir:0}],
+    side_plank: [{w:0,r:60,rir:1},{w:0,r:60,rir:1}]
+  }, sentiment: 3, notes: '' },
+
+  // Apr 5 — Push
+  { date: '2026-04-05', day: 'A', sets: {
+    incline_db_press: [{w:30,r:10,rir:1},{w:30,r:10,rir:1},{w:30,r:9,rir:0},{w:30,r:8,rir:0}],
+    flat_db_press: [{w:20,r:12,rir:1},{w:20,r:12,rir:1},{w:20,r:12,rir:1}],
+    seated_db_ohp: [{w:25,r:10,rir:1},{w:25,r:10,rir:1},{w:25,r:9,rir:0},{w:25,r:8,rir:0}],
+    db_lateral_raise: [{w:10,r:12,rir:1},{w:10,r:12,rir:1},{w:10,r:12,rir:1},{w:10,r:12,rir:1}],
+    face_pull: [{w:0,r:15,rir:1,note:'light'},{w:0,r:15,rir:1},{w:0,r:15,rir:1}],
+    tricep_pressdown: [{w:35,r:15,rir:1},{w:35,r:15,rir:1},{w:35,r:15,rir:1}],
+    hanging_knee_raise: [{w:0,r:12,rir:1},{w:0,r:12,rir:1},{w:0,r:10,rir:1}]
+  }, sentiment: 4, notes: '' },
+
+  // Apr 3 — Shoulders + Arms
+  { date: '2026-04-03', day: 'D', sets: {
+    pull_ups_quality: [{w:0,r:3,rir:2},{w:0,r:3,rir:2},{w:0,r:3,rir:2}],
+    db_lateral_raise: [{w:10,r:13,rir:1},{w:10,r:13,rir:1},{w:10,r:13,rir:1},{w:10,r:13,rir:1}],
+    rear_delt_fly: [{w:20,r:15,rir:2},{w:20,r:15,rir:2},{w:20,r:15,rir:2}],
+    incline_db_curl: [{w:20,r:10,rir:0,note:'hard but 10 clean'},{w:20,r:10,rir:0,note:'9 to failure, 10th just complete'},{w:20,r:6,rir:0,note:'failure'}],
+    overhead_tricep_ext: [{w:25,r:12,rir:1},{w:25,r:12,rir:1},{w:25,r:12,rir:1}],
+    tricep_pressdown: [{w:45,r:12,rir:1},{w:45,r:12,rir:1}]
+  }, sentiment: 4, notes: '' },
+
+  // Apr 2 — Legs
+  { date: '2026-04-02', day: 'C', sets: {
+    ffe_split_squat: [{w:40,r:8,rir:1},{w:40,r:8,rir:1},{w:40,r:8,rir:1},{w:40,r:8,rir:1}],
+    hamstring_curl: [{w:90,r:12,rir:1,note:'seated version, pre-Apr 9 switch'},{w:90,r:12,rir:1},{w:90,r:10,rir:0},{w:90,r:10,rir:0}],
+    hip_thrust: [{w:50,r:12,rir:1},{w:50,r:12,rir:1},{w:50,r:12,rir:1}],
+    calf_raise: [{w:50,r:15,rir:1},{w:50,r:15,rir:1},{w:50,r:15,rir:1}]
+  }, sentiment: 4, notes: '' },
+];
+
+/* ============================================================
+   STATE
+   ============================================================ */
+
+const STORAGE_KEY = 'gym_v1';
+
+function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try { return JSON.parse(raw); } catch(e){}
+  }
+  // first run: seed
+  const st = {
+    history: SEED_HISTORY.slice(),
+    prefs: {...DEFAULT_PREFS},
+    draft: null,           // { date, day, sets: {exId: [...sets]}, sentiment, notes }
+    program: PROGRAM,       // stored so user edits persist
+  };
+  saveState(st);
+  return st;
+}
+function saveState(st) { localStorage.setItem(STORAGE_KEY, JSON.stringify(st)); }
+
+let state = loadState();
+let currentTab = 'today';
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+
+function todayISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function nextDay() {
+  const last = state.history[0];
+  if (!last) return 'A';
+  const i = DAYS.indexOf(last.day);
+  return DAYS[(i + 1) % DAYS.length];
+}
+function findLastPerformance(exId, excludeDate=null) {
+  for (const s of state.history) {
+    if (excludeDate && s.date === excludeDate) continue;
+    if (s.sets && s.sets[exId] && s.sets[exId].length) {
+      return { date: s.date, sets: s.sets[exId] };
+    }
+  }
+  return null;
+}
+function fmtSet(set) {
+  if (!set) return '—';
+  if (set.w === 0 && set.r) return `${set.r}`;
+  if (set.w != null && set.r != null) return `${set.w}×${set.r}`;
+  return '—';
+}
+function rirLabel(rir) {
+  if (rir === 0) return 'fail';
+  if (rir === 1) return '1 RIR';
+  if (rir === 2) return '2 RIR';
+  if (rir === 3) return 'easy';
+  return '';
+}
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+
+function render() {
+  document.querySelectorAll('nav.tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === currentTab);
+  });
+  const view = document.getElementById('view');
+  view.innerHTML = '';
+  if (currentTab === 'today') renderToday(view);
+  else if (currentTab === 'history') renderHistory(view);
+  else if (currentTab === 'exercises') renderExercises(view);
+  else if (currentTab === 'settings') renderSettings(view);
+}
+
+/* ---------- TODAY ---------- */
+
+function renderToday(view) {
+  if (!state.draft) {
+    const suggestedDay = nextDay();
+    document.getElementById('page-title').textContent = 'Today';
+    document.getElementById('page-sub').textContent = 'Pick your session to start logging';
+    document.getElementById('top-pill').textContent = todayISO();
+
+    const c = document.createElement('div');
+    c.className = 'card';
+    c.innerHTML = `
+      <h2>Suggested next: Day ${suggestedDay}</h2>
+      <div class="pres">${DAY_NAMES[suggestedDay]}</div>
+      <div class="daypicker" id="dp"></div>
+      <button class="btn" id="start">Start session</button>
+      <div class="muted-text" style="margin-top:10px; text-align:center">
+        Rotation: A → B → C → D. Based on your last session you're due for <b>${suggestedDay}</b>.
+      </div>
+    `;
+    view.appendChild(c);
+
+    let picked = suggestedDay;
+    const dp = document.getElementById('dp');
+    DAYS.forEach(d => {
+      const b = document.createElement('button');
+      b.textContent = `${d} · ${DAY_NAMES[d].split(' — ')[0]}`;
+      if (d === picked) b.classList.add('active');
+      b.onclick = () => { picked = d; dp.querySelectorAll('button').forEach(x=>x.classList.remove('active')); b.classList.add('active'); };
+      dp.appendChild(b);
+    });
+
+    document.getElementById('start').onclick = () => {
+      state.draft = { date: todayISO(), day: picked, sets: {}, sentiment: null, notes: '' };
+      // pre-populate empty set arrays for each exercise
+      state.program[picked].forEach(ex => {
+        state.draft.sets[ex.id] = Array.from({ length: ex.sets }, () => ({ w: '', r: '', rir: '' }));
+      });
+      saveState(state);
+      render();
+    };
+    return;
+  }
+
+  // Active session
+  const d = state.draft;
+  document.getElementById('page-title').textContent = `Day ${d.day}`;
+  document.getElementById('page-sub').textContent = DAY_NAMES[d.day];
+  document.getElementById('top-pill').textContent = d.date;
+
+  state.program[d.day].forEach(ex => renderExerciseCard(view, ex, d));
+
+  // Rest timer quick triggers
+  const timerCard = document.createElement('div');
+  timerCard.className = 'card';
+  timerCard.innerHTML = `
+    <div class="muted-text" style="margin-bottom:8px">REST TIMER</div>
+    <div class="row">
+      <button class="btn secondary small" onclick="startTimer(60)">60s</button>
+      <button class="btn secondary small" onclick="startTimer(90)">90s</button>
+      <button class="btn secondary small" onclick="startTimer(120)">2 min</button>
+    </div>
+  `;
+  view.appendChild(timerCard);
+
+  // Session meta
+  const metaCard = document.createElement('div');
+  metaCard.className = 'card';
+  metaCard.innerHTML = `
+    <label>How did it feel?</label>
+    <div class="sent" id="sent">
+      ${[1,2,3,4,5].map(n => `<button data-s="${n}" ${d.sentiment===n?'class="active"':''}>${['😵','😓','😐','🙂','🔥'][n-1]}</button>`).join('')}
+    </div>
+    <label>Notes</label>
+    <textarea id="notes" placeholder="How did technique feel? Any pain, PRs, or things to remember?">${d.notes || ''}</textarea>
+    <hr class="soft">
+    <button class="btn" id="finish">Finish session</button>
+    <button class="btn secondary" style="margin-top:8px" id="discard">Discard</button>
+  `;
+  view.appendChild(metaCard);
+
+  metaCard.querySelectorAll('#sent button').forEach(b => {
+    b.onclick = () => {
+      d.sentiment = Number(b.dataset.s);
+      saveState(state);
+      render();
+    };
+  });
+  metaCard.querySelector('#notes').oninput = (e) => { d.notes = e.target.value; saveState(state); };
+  metaCard.querySelector('#finish').onclick = finishSession;
+  metaCard.querySelector('#discard').onclick = () => {
+    if (confirm('Discard this session?')) { state.draft = null; saveState(state); render(); }
+  };
+}
+
+function renderExerciseCard(view, ex, draft) {
+  const last = findLastPerformance(ex.id, draft.date);
+  const card = document.createElement('div');
+  card.className = 'card';
+  const pref = state.prefs[ex.id];
+  const prefBadge = pref && pref.status === 'liked' ? '<span class="pill">liked</span>' : '';
+
+  let html = `
+    <div class="ex-head">
+      <div>
+        <div class="nm">${ex.name} ${prefBadge}</div>
+        <div class="tgt">${ex.sets} × ${ex.repRange} · ${ex.weightHint}</div>
+      </div>
+    </div>
+    <div class="notes">${ex.notes}</div>
+    <div class="sets" id="sets-${ex.id}">
+      <div class="sethead">
+        <div>#</div><div>Weight</div><div>Reps</div><div>RIR</div><div></div>
+      </div>
+  `;
+  draft.sets[ex.id].forEach((s, i) => {
+    const lastSet = last && last.sets[i];
+    html += `
+      <div class="setrow">
+        <div class="sn">${i+1}</div>
+        <div class="hint">
+          <input type="number" inputmode="decimal" step="0.5" data-ex="${ex.id}" data-i="${i}" data-f="w" value="${s.w}" placeholder="${lastSet ? (lastSet.w || '—') : '—'}">
+          <div class="h">${lastSet ? (lastSet.w ? lastSet.w + ' lb' : 'BW') : ''}</div>
+        </div>
+        <div class="hint">
+          <input type="number" inputmode="numeric" data-ex="${ex.id}" data-i="${i}" data-f="r" value="${s.r}" placeholder="${lastSet ? lastSet.r : '—'}">
+          <div class="h">${lastSet ? lastSet.r + ' reps' : ''}</div>
+        </div>
+        <div class="hint">
+          <select data-ex="${ex.id}" data-i="${i}" data-f="rir">
+            <option value="">—</option>
+            <option value="3" ${s.rir===3?'selected':''}>easy</option>
+            <option value="2" ${s.rir===2?'selected':''}>2</option>
+            <option value="1" ${s.rir===1?'selected':''}>1</option>
+            <option value="0" ${s.rir===0?'selected':''}>fail</option>
+          </select>
+          <div class="h">${lastSet ? rirLabel(lastSet.rir) : ''}</div>
+        </div>
+        <button class="del" data-ex="${ex.id}" data-i="${i}">×</button>
+      </div>`;
+  });
+  html += `</div>
+    <button class="addset" data-ex="${ex.id}">+ add set</button>
+    ${last ? `<div class="lastline"><b>Last time</b> · ${last.date} · ${last.sets.map(fmtSet).join(' · ')}</div>` : '<div class="lastline muted-text">No prior log for this exercise.</div>'}
+  `;
+  card.innerHTML = html;
+  view.appendChild(card);
+
+  // Wire inputs
+  card.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('input', e => {
+      const { ex, i, f } = el.dataset;
+      const v = el.value === '' ? '' : (f === 'rir' ? Number(el.value) : Number(el.value));
+      draft.sets[ex][Number(i)][f] = el.value === '' ? '' : v;
+      saveState(state);
+    });
+  });
+  card.querySelectorAll('.del').forEach(b => {
+    b.onclick = () => {
+      const { ex, i } = b.dataset;
+      draft.sets[ex].splice(Number(i), 1);
+      saveState(state); render();
+    };
+  });
+  card.querySelector('.addset').onclick = () => {
+    const exId = card.querySelector('.addset').dataset.ex;
+    draft.sets[exId].push({ w: '', r: '', rir: '' });
+    saveState(state); render();
+  };
+}
+
+function finishSession() {
+  const d = state.draft;
+  // compact sets — drop blank ones
+  const compact = {};
+  Object.keys(d.sets).forEach(exId => {
+    const kept = d.sets[exId].filter(s => s.w !== '' || s.r !== '' || s.rir !== '');
+    if (kept.length) compact[exId] = kept.map(s => ({
+      w: s.w === '' ? 0 : Number(s.w),
+      r: s.r === '' ? 0 : Number(s.r),
+      rir: s.rir === '' ? null : Number(s.rir),
+      ...(s.note ? { note: s.note } : {})
+    }));
+  });
+  const session = {
+    date: d.date, day: d.day, sets: compact,
+    sentiment: d.sentiment, notes: d.notes
+  };
+  state.history.unshift(session);
+  state.draft = null;
+  saveState(state);
+  showFinishedModal(session);
+}
+
+function showFinishedModal(s) {
+  const body = document.getElementById('modal-body');
+  body.innerHTML = `
+    <h3>Session saved</h3>
+    <p class="muted-text">${s.date} · Day ${s.day} · ${DAY_NAMES[s.day]}</p>
+    <p>In v1 this is where Claude reviews your session and proposes tweaks to the next one. For now, the numbers are logged and ready for review.</p>
+    <div class="row" style="margin-top:16px">
+      <button class="btn secondary" onclick="closeModal()">Close</button>
+      <button class="btn" onclick="closeModal(); currentTab='history'; render();">See history</button>
+    </div>
+  `;
+  document.getElementById('modal').classList.add('show');
+  render();
+}
+
+/* ---------- HISTORY ---------- */
+
+function renderHistory(view) {
+  document.getElementById('page-title').textContent = 'History';
+  document.getElementById('page-sub').textContent = `${state.history.length} sessions logged`;
+  document.getElementById('top-pill').textContent = '';
+
+  if (!state.history.length) {
+    view.innerHTML = '<div class="empty">No sessions yet. Tap Today to start.</div>';
+    return;
+  }
+  const card = document.createElement('div');
+  card.className = 'card';
+  state.history.forEach((s, idx) => {
+    const total = Object.values(s.sets).reduce((a, arr) => a + arr.length, 0);
+    const el = document.createElement('div');
+    el.className = 'h-item';
+    el.innerHTML = `
+      <div class="d">${s.date} · Day ${s.day}</div>
+      <div class="n">${DAY_NAMES[s.day]}</div>
+      <div class="s">${total} sets · ${Object.keys(s.sets).length} exercises ${s.sentiment ? '· ' + ['😵','😓','😐','🙂','🔥'][s.sentiment-1] : ''}</div>
+    `;
+    el.onclick = () => openHistoryDetail(idx);
+    card.appendChild(el);
+  });
+  view.appendChild(card);
+}
+
+function openHistoryDetail(idx) {
+  const s = state.history[idx];
+  const body = document.getElementById('modal-body');
+  let html = `
+    <h3>${s.date} · Day ${s.day}</h3>
+    <p class="muted-text">${DAY_NAMES[s.day]}</p>
+  `;
+  Object.keys(s.sets).forEach(exId => {
+    const ex = Object.values(PROGRAM).flat().find(e => e.id === exId);
+    const nm = ex ? ex.name : exId;
+    html += `<div style="margin-top:14px"><b>${nm}</b><div class="muted-text" style="margin-top:4px">
+      ${s.sets[exId].map((set, i) => `S${i+1}: ${fmtSet(set)}${set.rir != null ? ' (' + rirLabel(set.rir) + ')' : ''}${set.note ? ' — ' + set.note : ''}`).join('<br>')}
+    </div></div>`;
+  });
+  if (s.notes) html += `<hr class="soft"><div class="muted-text">Notes</div><div>${s.notes}</div>`;
+  html += `<hr class="soft"><button class="btn danger" onclick="deleteSession(${idx})">Delete session</button>`;
+  html += `<button class="btn secondary" style="margin-top:8px" onclick="closeModal()">Close</button>`;
+  body.innerHTML = html;
+  document.getElementById('modal').classList.add('show');
+}
+
+function deleteSession(idx) {
+  if (!confirm('Delete this session?')) return;
+  state.history.splice(idx, 1);
+  saveState(state); closeModal(); render();
+}
+
+/* ---------- EXERCISES (library + prefs) ---------- */
+
+function renderExercises(view) {
+  document.getElementById('page-title').textContent = 'Exercises';
+  document.getElementById('page-sub').textContent = 'Your preferences and memory';
+  document.getElementById('top-pill').textContent = '';
+
+  const c = document.createElement('div');
+  c.className = 'card';
+  c.innerHTML = `<h2>Preferences & memory</h2><div class="pres">Claude will respect these when suggesting sessions.</div>`;
+  const ids = Object.keys(state.prefs);
+  ids.forEach(id => {
+    const p = state.prefs[id];
+    const row = document.createElement('div');
+    row.className = 'ex-pref';
+    row.innerHTML = `
+      <div style="flex:1">
+        <div>${p.name}</div>
+        <div class="muted-text">${p.reason}</div>
+      </div>
+      <div class="status ${p.status}">${p.status}</div>
+    `;
+    row.onclick = () => openPrefEditor(id);
+    c.appendChild(row);
+  });
+  const add = document.createElement('button');
+  add.className = 'addset'; add.style.marginTop = '12px';
+  add.textContent = '+ add preference';
+  add.onclick = () => openPrefEditor(null);
+  c.appendChild(add);
+  view.appendChild(c);
+
+  // Full program view
+  const c2 = document.createElement('div');
+  c2.className = 'card';
+  c2.innerHTML = `<h2>Program</h2><div class="pres">4-day rotation: A → B → C → D</div>`;
+  DAYS.forEach(d => {
+    const section = document.createElement('div');
+    section.style.marginTop = '14px';
+    section.innerHTML = `<div style="font-weight:600">Day ${d} — ${DAY_NAMES[d]}</div>` +
+      '<div class="muted-text" style="margin-top:6px">' +
+      PROGRAM[d].map(ex => `${ex.name} · ${ex.sets}×${ex.repRange} @ ${ex.weightHint}`).join('<br>') +
+      '</div>';
+    c2.appendChild(section);
+  });
+  view.appendChild(c2);
+}
+
+function openPrefEditor(id) {
+  const existing = id ? state.prefs[id] : { name: '', status: 'neutral', reason: '' };
+  const body = document.getElementById('modal-body');
+  body.innerHTML = `
+    <h3>${id ? 'Edit' : 'Add'} preference</h3>
+    <label>Exercise</label>
+    <input id="pe-name" value="${existing.name}" style="width:100%; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:10px;">
+    <label>Status</label>
+    <div class="row">
+      <button class="btn secondary small" data-s="liked">Liked</button>
+      <button class="btn secondary small" data-s="neutral">Neutral</button>
+      <button class="btn secondary small" data-s="banned">Banned</button>
+    </div>
+    <label>Reason (for future-you and Claude)</label>
+    <textarea id="pe-reason">${existing.reason}</textarea>
+    <hr class="soft">
+    <div class="row">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      ${id ? `<button class="btn danger" onclick="deletePref('${id}')">Delete</button>` : ''}
+      <button class="btn" id="pe-save">Save</button>
+    </div>
+  `;
+  let status = existing.status;
+  body.querySelectorAll('[data-s]').forEach(b => {
+    if (b.dataset.s === status) b.style.borderColor = 'var(--accent)';
+    b.onclick = () => { status = b.dataset.s;
+      body.querySelectorAll('[data-s]').forEach(x => x.style.borderColor = 'var(--border)');
+      b.style.borderColor = 'var(--accent)';
+    };
+  });
+  body.querySelector('#pe-save').onclick = () => {
+    const name = body.querySelector('#pe-name').value.trim();
+    const reason = body.querySelector('#pe-reason').value.trim();
+    if (!name) { alert('Name required'); return; }
+    const key = id || ('pref_' + Date.now());
+    state.prefs[key] = { name, status, reason };
+    saveState(state); closeModal(); render();
+  };
+  document.getElementById('modal').classList.add('show');
+}
+function deletePref(id) {
+  if (!confirm('Delete?')) return;
+  delete state.prefs[id];
+  saveState(state); closeModal(); render();
+}
+
+/* ---------- SETTINGS ---------- */
+
+function renderSettings(view) {
+  document.getElementById('page-title').textContent = 'Settings';
+  document.getElementById('page-sub').textContent = '';
+  document.getElementById('top-pill').textContent = '';
+
+  const c = document.createElement('div');
+  c.className = 'card';
+  c.innerHTML = `
+    <h2>Data</h2>
+    <div class="pres">Export your data as JSON to back up or move to the v1 cloud app later.</div>
+    <hr class="soft">
+    <button class="btn secondary" id="export">Export JSON</button>
+    <button class="btn secondary" id="import" style="margin-top:8px">Import JSON</button>
+    <input type="file" id="file" accept="application/json" style="display:none">
+    <hr class="soft">
+    <button class="btn danger" id="wipe">Reset everything (re-seed)</button>
+  `;
+  view.appendChild(c);
+
+  const c2 = document.createElement('div');
+  c2.className = 'card';
+  c2.innerHTML = `
+    <h2>About</h2>
+    <div class="pres">
+      v0 · local-only. Your data lives in this browser's localStorage.<br>
+      ${state.history.length} sessions logged · ${Object.keys(state.prefs).length} preferences.
+    </div>
+  `;
+  view.appendChild(c2);
+
+  c.querySelector('#export').onclick = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `gym_backup_${todayISO()}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+  c.querySelector('#import').onclick = () => c.querySelector('#file').click();
+  c.querySelector('#file').onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (confirm('Replace current data with imported JSON?')) {
+          state = d; saveState(state); render();
+        }
+      } catch { alert('Invalid JSON.'); }
+    };
+    r.readAsText(f);
+  };
+  c.querySelector('#wipe').onclick = () => {
+    if (confirm('Wipe everything and re-seed with original log data?')) {
+      localStorage.removeItem(STORAGE_KEY);
+      state = loadState(); render();
+    }
+  };
+}
+
+/* ============================================================
+   MODAL + TIMER + TABS
+   ============================================================ */
+
+function closeModal() { document.getElementById('modal').classList.remove('show'); }
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target.id === 'modal') closeModal();
+});
+
+let timerInt = null, timerEnd = 0;
+function startTimer(sec) {
+  stopTimer();
+  timerEnd = Date.now() + sec * 1000;
+  document.getElementById('timer').classList.add('show');
+  const tick = () => {
+    const left = Math.max(0, Math.round((timerEnd - Date.now())/1000));
+    const m = Math.floor(left/60), s = left % 60;
+    document.getElementById('timer-t').textContent = `${m}:${String(s).padStart(2,'0')}`;
+    if (left <= 0) {
+      stopTimer();
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    }
+  };
+  tick();
+  timerInt = setInterval(tick, 500);
+}
+function stopTimer() {
+  if (timerInt) clearInterval(timerInt);
+  timerInt = null;
+  document.getElementById('timer').classList.remove('show');
+}
+
+document.querySelectorAll('nav.tabs button').forEach(b => {
+  b.onclick = () => { currentTab = b.dataset.tab; render(); };
+});
+
+render();
+</script>
+</body>
+</html>
