@@ -93,8 +93,8 @@ export default function LogClient({ plan }: { plan: any }) {
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const { activity_id } = await res.json();
-      router.push(`/history/${activity_id}`);
+      await res.json();
+      router.push(`/calendar/${plan.date}`);
     } catch (e: any) { setErr(e.message); setBusy(false); }
   }
 

@@ -27,8 +27,8 @@ export default function AddClient({ defaultDate }: { defaultDate: string }) {
         body: JSON.stringify({ date, type, status: 'unplanned', notes: notes || undefined, data }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const { activity_id } = await res.json();
-      router.push(`/history/${activity_id}`);
+      await res.json();
+      router.push(`/calendar/${date}`);
     } catch (e: any) { setErr(e.message); setBusy(false); }
   }
 
