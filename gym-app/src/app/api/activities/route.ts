@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase/server';
 import { buildAIContext } from '@/lib/ai/context';
 import { callClaudeJSON, REVIEW_SYSTEM } from '@/lib/ai/anthropic';
+import { reconcile } from '@/lib/reconcile';
 import { z } from 'zod';
 
 export const maxDuration = 60;
@@ -81,6 +82,17 @@ Return JSON only.`;
     } catch (e: any) {
       console.error('[auto_review]', e?.message || e);
     }
+  }
+
+  // Fire-and-forget reconcile — logging an activity can close the
+  // drop-off gap (return_from_gap proposal should roll over to applied
+  // once the user is back in rhythm). Don't await; any reconciler error
+  // is caught internally.
+  {
+    const sbKick = supabaseServer();
+    reconcile(sbKick, user.id, new Date(), 'activity_logged').catch((e) => {
+      console.error('[api/activities] reconcile hook failed', e);
+    });
   }
 
   // Recap screen for done sessions; rest-day sessions skip it and go back to Today

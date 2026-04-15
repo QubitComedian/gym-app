@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "types": "tsc --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "db:seed:user": "tsx src/lib/seed/run-user-seed.ts"
   },
   "dependencies": {
