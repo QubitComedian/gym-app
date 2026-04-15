@@ -83,5 +83,14 @@ Return JSON only.`;
     }
   }
 
-  return NextResponse.json({ activity_id: act.id });
+  // Recap screen for done sessions; rest-day sessions skip it and go back to Today
+  // (with a flag Today can use later to show a small tip).
+  const redirectTo = (() => {
+    if (b.status !== 'done') return `/calendar/${b.date}`;
+    if (!b.plan_id) return `/calendar/${b.date}`;
+    if (b.type === 'rest') return '/today?rest=1';
+    return `/log/${b.plan_id}/complete`;
+  })();
+
+  return NextResponse.json({ activity_id: act.id, redirect: redirectTo });
 }

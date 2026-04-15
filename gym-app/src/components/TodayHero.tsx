@@ -4,6 +4,8 @@ import Link from 'next/link';
 import IconGlyph from './ui/IconGlyph';
 import PrescriptionView, { summarizePrescription } from './PrescriptionView';
 import { TYPE_LABEL, typeColor } from '@/lib/session-types';
+import WhySheet from './WhySheet';
+import type { WhyExplainer } from '@/lib/whyThisSession';
 
 type Plan = {
   id: string;
@@ -14,8 +16,19 @@ type Plan = {
   prescription: any;
 } | null;
 
-export default function TodayHero({ plan, alreadyDone, today }: { plan: Plan; alreadyDone: boolean; today: string }) {
+export default function TodayHero({
+  plan,
+  alreadyDone,
+  today,
+  why,
+}: {
+  plan: Plan;
+  alreadyDone: boolean;
+  today: string;
+  why?: WhyExplainer | null;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
 
   if (!plan || plan.type === 'rest') {
     return (
@@ -24,9 +37,15 @@ export default function TodayHero({ plan, alreadyDone, today }: { plan: Plan; al
           <div className="flex items-center gap-3 mb-3">
             <IconGlyph type="rest" size={24} color="#b0b0b0" />
             <h2 className="text-xl font-semibold">Rest day</h2>
+            {why && plan && (
+              <WhyButton onClick={() => setWhyOpen(true)} />
+            )}
           </div>
           <p className="text-small text-muted-2">Recover. Walk. Hydrate. Sleep.</p>
         </section>
+        {why && plan && (
+          <WhySheet open={whyOpen} onClose={() => setWhyOpen(false)} why={why} planId={plan.id} date={plan.date} />
+        )}
         <AlternativeDrawer today={today} />
       </>
     );
@@ -39,12 +58,16 @@ export default function TodayHero({ plan, alreadyDone, today }: { plan: Plan; al
           <div className="flex items-center gap-3 mb-2">
             <IconGlyph type={plan.type} size={24} />
             <h2 className="text-xl font-semibold">Done today</h2>
+            {why && <WhyButton onClick={() => setWhyOpen(true)} />}
           </div>
           <p className="text-small text-muted-2 mb-4">You logged {TYPE_LABEL[plan.type]}{plan.day_code ? ` · ${plan.day_code}` : ''}.</p>
           <Link href={`/calendar/${today}`} className="inline-block rounded-lg bg-panel-2 border border-border px-4 py-2.5 text-small">
             View session detail
           </Link>
         </section>
+        {why && (
+          <WhySheet open={whyOpen} onClose={() => setWhyOpen(false)} why={why} planId={plan.id} date={plan.date} />
+        )}
         <AlternativeDrawer today={today} secondary />
       </>
     );
@@ -57,21 +80,32 @@ export default function TodayHero({ plan, alreadyDone, today }: { plan: Plan; al
   return (
     <>
       <section className="rounded-2xl bg-panel border border-border overflow-hidden mb-4 shadow-card">
-        <button
-          onClick={() => setExpanded(e => !e)}
-          aria-expanded={expanded}
-          className="w-full text-left p-6 flex items-start gap-4 active:bg-panel-2/40 transition-colors"
-        >
-          <div className="shrink-0 mt-0.5 w-11 h-11 rounded-xl bg-panel-2 border border-border flex items-center justify-center" style={{ boxShadow: `inset 0 0 0 1px ${c}22` }}>
-            <IconGlyph type={plan.type} size={24} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-tiny text-muted uppercase tracking-wider mb-0.5">On deck</div>
-            <h2 className="text-xl font-semibold leading-tight">{sessionName}</h2>
-            {summary && <div className="text-small text-muted-2 mt-1">{summary}</div>}
-          </div>
-          <span className={`text-muted transition-transform ${expanded ? 'rotate-90' : ''}`}>›</span>
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setExpanded(e => !e)}
+            aria-expanded={expanded}
+            className="w-full text-left p-6 flex items-start gap-4 active:bg-panel-2/40 transition-colors"
+          >
+            <div className="shrink-0 mt-0.5 w-11 h-11 rounded-xl bg-panel-2 border border-border flex items-center justify-center" style={{ boxShadow: `inset 0 0 0 1px ${c}22` }}>
+              <IconGlyph type={plan.type} size={24} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-tiny text-muted uppercase tracking-wider mb-0.5 flex items-center gap-2">
+                <span>On deck</span>
+              </div>
+              <h2 className="text-xl font-semibold leading-tight flex items-center gap-2">
+                <span className="truncate">{sessionName}</span>
+              </h2>
+              {summary && <div className="text-small text-muted-2 mt-1">{summary}</div>}
+            </div>
+            <span className={`text-muted transition-transform ${expanded ? 'rotate-90' : ''}`}>›</span>
+          </button>
+          {why && (
+            <div className="absolute top-5 right-12">
+              <WhyButton onClick={() => setWhyOpen(true)} />
+            </div>
+          )}
+        </div>
 
         {expanded && (
           <div className="px-6 pb-4 animate-fade-in border-t border-border pt-4">
@@ -89,8 +123,25 @@ export default function TodayHero({ plan, alreadyDone, today }: { plan: Plan; al
         </div>
       </section>
 
+      {why && (
+        <WhySheet open={whyOpen} onClose={() => setWhyOpen(false)} why={why} planId={plan.id} date={plan.date} />
+      )}
+
       <AlternativeDrawer today={today} />
     </>
+  );
+}
+
+function WhyButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); e.preventDefault(); onClick(); }}
+      aria-label="Why this session?"
+      className="w-6 h-6 rounded-full bg-panel-2 border border-border text-muted hover:text-accent hover:border-accent/40 text-tiny flex items-center justify-center leading-none transition-colors"
+    >
+      ?
+    </button>
   );
 }
 
