@@ -6,6 +6,35 @@ export function getAnthropic() {
   return new Anthropic({ apiKey: key });
 }
 
+export const PRESCRIPTION_SCHEMA_DOC = `
+Prescription JSON shapes. Populate the key matching the plan's \`type\`.
+
+GYM (type=gym): { blocks: Block[], notes_top?, estimated_minutes?, creatine_g? }
+  Block "single": { kind:'single', position, exercise_id, set_scheme, weight_hint?, rest_s?, rir_target?, notes? }
+  Block "superset": { kind:'superset', position, rounds, rest_between_s?, items: [{ letter, exercise_id, set_scheme, weight_hint?, notes? }], drop_set_on_last? }
+  set_scheme: { type:'standard', sets, reps } | { type:'emom', minutes, reps_per_min, total_reps? } | { type:'time', sets?, seconds_per_side? | seconds? } | { type:'circuit', rounds? }
+
+RUN (type=run): { run: { km?, duration_min?, pace_s_per_km? [lo,hi] | number, effort?, zone?, warmup_km?, cooldown_km?, intervals?: [{ repeats, work_km? | work_s?, pace_s_per_km?, rest_s?, note? }], options?: [{ name, km?, sets?, interval_km?, interval_pace_s_per_km?, rest_s?, warmup_km?, cooldown_km? }], route?, notes? }, estimated_minutes? }
+  ALWAYS include km OR duration_min, and pace_s_per_km OR effort. A run with none of these is useless.
+
+BIKE (type=bike): { bike: { km?, duration_min?, avg_power_w?, zone?, notes? }, estimated_minutes? }
+
+SWIM (type=swim): { swim: { distance_m?, duration_min?, stroke?, sets?: [{ repeats, distance_m, stroke?, rest_s?, pace? }], notes? }, estimated_minutes? }
+
+YOGA (type=yoga): { yoga: { duration_min, style?, focus?, notes? }, estimated_minutes? }
+
+CLIMB (type=climb): { climb: { duration_min, style?, grade_target?, notes? }, estimated_minutes? }
+
+MOBILITY (type=mobility): { mobility: { duration_min, focus?, routine: [{ exercise, duration_s? | reps?, notes? }] }, estimated_minutes? }
+  ALWAYS populate duration_min AND routine with at least 4 moves. Do not return empty mobility.
+
+SAUNA+COLD (type=sauna_cold): { sauna_cold: { rounds, sauna_min_per_round?, cold_min_per_round?, notes? }, estimated_minutes? }
+
+REST (type=rest): { notes_top? }
+
+Every prescription for a non-rest session MUST have enough information for the user to know what to actually do — a run without distance or duration is broken; a mobility session without a routine is broken; a gym session without blocks is broken.
+`;
+
 export const REVIEW_SYSTEM = `You are Thibault's strength & conditioning AI co-coach.
 You are looking at a SINGLE just-completed session. Read it in the context of:
   - the trainer brief (north star: lean aesthetic → triathlon → handstands → mobility)
@@ -31,7 +60,9 @@ Rules:
   - If no changes are warranted, return diff with empty arrays and rationale="no change".
   - Keep diffs SMALL and specific — load adjustments, swap an exercise, add/remove a set.
   - Respect banned exercises. Bias toward liked.
-  - Output JSON ONLY. No prose outside JSON.`;
+  - When you create or update a prescription, populate the FULL shape per the schema below.
+  - Output JSON ONLY. No prose outside JSON.
+${PRESCRIPTION_SCHEMA_DOC}`;
 
 export const ADJUST_SYSTEM = `You are Thibault's strength & conditioning AI co-coach.
 The user wants a SCOPED adjustment for a single date.
@@ -57,7 +88,9 @@ Rules:
   - Respect banned exercises; bias toward liked.
   - If mode is "propose" for an empty date, create ONE session that fits the phase.
   - If no change is warranted, return empty arrays with headline="No change needed".
-  - Output JSON ONLY.`;
+  - Every prescription you return MUST be fully populated per the schema below.
+  - Output JSON ONLY.
+${PRESCRIPTION_SCHEMA_DOC}`;
 
 export const REPLAN_SYSTEM = `You are Thibault's strength & conditioning AI co-coach.
 The user asked for a horizon replan. Look at:
@@ -78,7 +111,9 @@ Rules:
   - Do NOT change phase boundaries unless explicitly asked.
   - Honor the calendar pattern as the default (push/pull/lower/upper_full + easy_run/quality_run + rest).
   - Adjust loads based on what actually happened, but stay within phase intent.
-  - Output JSON ONLY.`;
+  - Every prescription you return MUST be fully populated per the schema below.
+  - Output JSON ONLY.
+${PRESCRIPTION_SCHEMA_DOC}`;
 
 export async function callClaudeJSON(opts: { system: string; user: string; max_tokens?: number }) {
   const client = getAnthropic();

@@ -1,5 +1,6 @@
 'use client';
 import { useState, useTransition } from 'react';
+import Link from 'next/link';
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
@@ -19,11 +20,11 @@ export default function YouClient({
 }) {
   return (
     <main className="max-w-xl mx-auto px-4 pt-5 pb-28 space-y-5">
-      <header className="flex items-center justify-between">
-        <div>
+      <header className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
           <div className="text-tiny text-muted uppercase tracking-wider">You</div>
-          <h1 className="text-2xl font-bold tracking-tight">{user.email.split('@')[0]}</h1>
-          <div className="text-small text-muted-2 mt-0.5">{user.email}</div>
+          <h1 className="text-2xl font-bold tracking-tight truncate">{user.email.split('@')[0]}</h1>
+          <div className="text-small text-muted-2 mt-0.5 truncate">{user.email}</div>
         </div>
         <Avatar email={user.email} />
       </header>
@@ -39,82 +40,64 @@ export default function YouClient({
 function Avatar({ email }: { email: string }) {
   const initial = (email[0] ?? '?').toUpperCase();
   return (
-    <div className="w-12 h-12 rounded-full bg-panel-2 border border-border flex items-center justify-center text-lg font-semibold text-muted-2">
+    <div className="shrink-0 w-12 h-12 rounded-full bg-panel-2 border border-border flex items-center justify-center text-lg font-semibold text-muted-2">
       {initial}
     </div>
   );
 }
 
-/* ───────────────────── Phase ───────────────────── */
+/* ───────────────────── Phase (demoted — contextual only) ───────────────────── */
 
 function PhaseSection({ activePhase, phases }: { activePhase: Phase | null; phases: Phase[] }) {
-  const [target, setTarget] = useState(activePhase?.target_ends_on ?? '');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const { push } = useToast();
-
-  async function save() {
-    if (!activePhase) return;
-    setBusy(true); setMsg(null);
-    try {
-      const res = await fetch('/api/phases', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: activePhase.id, target_ends_on: target || null }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      push({ kind: 'success', title: 'Phase updated' });
-    } catch (e: any) { setMsg(e.message); }
-    finally { setBusy(false); }
+  if (!activePhase) {
+    return (
+      <section className="rounded-xl bg-panel border border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <div className="text-small text-muted-2">No active training phase.</div>
+        </div>
+      </section>
+    );
   }
 
+  const endsOn = activePhase.target_ends_on;
   return (
     <section className="rounded-xl bg-panel border border-border p-4">
-      <div className="text-tiny text-muted uppercase tracking-wider mb-2">Current phase</div>
-      {activePhase ? (
-        <>
-          <div className="flex items-baseline gap-2">
-            <div className="text-lg font-semibold">{activePhase.code}</div>
-            <div className="text-small text-muted-2">· {activePhase.name}</div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-tiny text-muted uppercase tracking-wider">Training phase</div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <div className="text-lg font-semibold">{activePhase.name}</div>
+            <div className="text-tiny text-muted-2 uppercase tracking-wider">{activePhase.code}</div>
           </div>
-          <label className="block mt-3">
-            <span className="text-tiny text-muted">Target end date</span>
-            <input
-              type="date"
-              value={target}
-              onChange={e => setTarget(e.target.value)}
-              className="w-full mt-1 bg-panel-2 border border-border rounded-lg px-3 py-2 text-small"
-            />
-          </label>
-          <button
-            onClick={save}
-            disabled={busy}
-            className="mt-3 px-4 py-2 rounded-lg bg-accent text-black font-semibold text-small disabled:opacity-50"
-          >
-            {busy ? 'Saving…' : 'Save'}
-          </button>
-          {msg && <div className="text-tiny text-danger mt-2">{msg}</div>}
-        </>
-      ) : (
-        <div className="text-small text-muted-2">No active phase.</div>
-      )}
+          {endsOn && (
+            <div className="text-small text-muted-2 mt-1">
+              Aims to end {format(new Date(endsOn + 'T00:00:00'), 'MMM d, yyyy')}
+            </div>
+          )}
+        </div>
+      </div>
 
-      {phases.length > 1 && (
-        <details className="mt-4">
-          <summary className="text-tiny text-muted cursor-pointer">All phases</summary>
-          <ul className="mt-2 space-y-1">
+      <details className="mt-3">
+        <summary className="text-tiny text-muted cursor-pointer">What does phase mean?</summary>
+        <p className="text-tiny text-muted-2 mt-2 leading-relaxed">
+          A phase is a multi-week block with a specific training focus (e.g. a cut, a base-build, a peak).
+          Claude uses the current phase to bias weekly targets, exercise selection, and load. You don&apos;t need to manage this
+          — new phases are created as your training evolves.
+        </p>
+        {phases.length > 1 && (
+          <ul className="mt-3 space-y-1">
             {phases.map(p => (
-              <li key={p.id} className="flex items-center justify-between text-small py-1">
-                <span>
-                  <span className="font-medium">{p.code}</span>
-                  <span className="text-muted-2"> · {p.name}</span>
+              <li key={p.id} className="flex items-center justify-between text-tiny py-0.5">
+                <span className={p.status === 'active' ? '' : 'text-muted-2'}>
+                  <span className="font-medium">{p.name}</span>
+                  <span className="text-muted-2"> · {p.code}</span>
                 </span>
-                <span className="text-tiny text-muted">{p.status}{p.target_ends_on ? ` · ends ${p.target_ends_on}` : ''}</span>
+                <span className="text-muted">{p.status}</span>
               </li>
             ))}
           </ul>
-        </details>
-      )}
+        )}
+      </details>
     </section>
   );
 }
@@ -153,16 +136,16 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
     <section className="rounded-xl bg-panel border border-border">
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left"
       >
-        <div>
+        <div className="min-w-0">
           <div className="text-tiny text-muted uppercase tracking-wider">Exercise library</div>
-          <div className="text-small mt-0.5">
+          <div className="text-small mt-0.5 truncate">
             {items.length} exercises
             <span className="text-muted-2"> · {likedCount} liked · {bannedCount} avoided</span>
           </div>
         </div>
-        <span className={`text-muted transition-transform ${expanded ? 'rotate-90' : ''}`}>›</span>
+        <span className={`text-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`}>›</span>
       </button>
       {expanded && (
         <div className="px-4 pb-4 border-t border-border pt-3 animate-fade-in">
@@ -174,12 +157,15 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
           />
           <ul className="rounded-lg bg-panel-2/40 border border-border divide-y divide-border overflow-hidden">
             {visible.map(e => (
-              <li key={e.id} className="px-3 py-2.5 flex items-center gap-2">
-                <div className="flex-1 min-w-0">
+              <li key={e.id} className="flex items-center gap-2">
+                <Link
+                  href={`/exercise/${encodeURIComponent(e.id)}`}
+                  className="flex-1 min-w-0 px-3 py-2.5 hover:bg-panel-2/60"
+                >
                   <div className="text-small font-medium truncate">{e.name}</div>
-                  <div className="text-tiny text-muted">{e.phases.join(' · ')}</div>
-                </div>
-                <div className="flex gap-1">
+                  <div className="text-tiny text-muted">{e.phases.join(' · ') || 'never prescribed'}</div>
+                </Link>
+                <div className="flex gap-1 pr-2">
                   {STATUS_BTN.map(s => {
                     const active = (e.pref?.status ?? 'neutral') === s.v;
                     return (
@@ -199,7 +185,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
             ))}
             {visible.length === 0 && <li className="px-3 py-6 text-center text-small text-muted">No matches.</li>}
           </ul>
-          <p className="text-tiny text-muted mt-2">Claude uses this when proposing changes.</p>
+          <p className="text-tiny text-muted mt-2">Tap a name to see cues, history, and progression.</p>
         </div>
       )}
     </section>
@@ -232,11 +218,11 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
   return (
     <section className="rounded-xl bg-panel border border-border p-4">
       <div className="text-tiny text-muted uppercase tracking-wider mb-2">Google Calendar</div>
-      <div className="flex items-center gap-2 mb-1">
-        <span className={`inline-block w-2 h-2 rounded-full ${google.connected ? 'bg-ok' : 'bg-muted'}`} />
-        <div className="text-small">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${google.connected ? 'bg-ok' : 'bg-muted'}`} />
+        <div className="text-small min-w-0">
           {google.connected
-            ? <>Connected{google.expiresAt ? <span className="text-muted-2"> · token expires {format(new Date(google.expiresAt), 'MMM d, p')}</span> : null}</>
+            ? <>Connected{google.expiresAt ? <span className="text-muted-2"> · expires {format(new Date(google.expiresAt), 'MMM d, p')}</span> : null}</>
             : 'Not connected'}
         </div>
       </div>
@@ -251,9 +237,9 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
           <div className="mt-4 space-y-3">
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-small font-medium flex-1">Pull events</span>
-                <input type="number" min={7} max={365} value={pullDays} onChange={e => setPullDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small" />
-                <span className="text-tiny text-muted">days</span>
+                <span className="text-small font-medium flex-1 min-w-0 truncate">Pull events</span>
+                <input type="number" min={7} max={365} value={pullDays} onChange={e => setPullDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
+                <span className="text-tiny text-muted shrink-0">days</span>
               </div>
               <button
                 disabled={!!busy}
@@ -266,13 +252,13 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
 
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-small font-medium flex-1">Push planned sessions</span>
-                <input type="number" min={1} max={60} value={pushDays} onChange={e => setPushDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small" />
-                <span className="text-tiny text-muted">days</span>
+                <span className="text-small font-medium flex-1 min-w-0 truncate">Push planned sessions</span>
+                <input type="number" min={1} max={60} value={pushDays} onChange={e => setPushDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
+                <span className="text-tiny text-muted shrink-0">days</span>
               </div>
               <button
                 disabled={!!busy}
-                onClick={() => call('/api/calendar/push', { calendar_id: calendarId, horizon_days: pushDays }, 'Push')}
+                onClick={() => call('/api/calendar/push', { calendar_id: calendarId, horizon_days: pushDays, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 'Push')}
                 className="w-full bg-panel-2 border border-border rounded-lg py-2 text-small disabled:opacity-50"
               >
                 {busy === 'Push' ? 'Pushing…' : 'Push planned sessions'}

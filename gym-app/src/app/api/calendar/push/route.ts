@@ -45,6 +45,7 @@ export async function POST(req: Request) {
   const calendarId = body.calendar_id || 'primary';
   const horizonDays = Math.min(Math.max(Number(body.horizon_days) || 14, 1), 60);
   const startTime = body.start_hour ? Number(body.start_hour) : 7; // 7am default
+  const timeZone: string = body.time_zone || 'UTC';
 
   let cal;
   try { cal = await getCalendarClient(user.id); }
@@ -74,14 +75,14 @@ export async function POST(req: Request) {
     if (link) {
       await cal.events.update({
         calendarId: link.google_calendar_id, eventId: link.google_event_id,
-        requestBody: { summary, description, start: { dateTime: startISO }, end: { dateTime: endISO } },
+        requestBody: { summary, description, start: { dateTime: startISO, timeZone }, end: { dateTime: endISO, timeZone } },
       });
       await sb.from('calendar_links').update({ checksum, last_synced_at: new Date().toISOString() }).eq('id', link.id);
       updated++;
     } else {
       const res = await cal.events.insert({
         calendarId,
-        requestBody: { summary, description, start: { dateTime: startISO }, end: { dateTime: endISO } },
+        requestBody: { summary, description, start: { dateTime: startISO, timeZone }, end: { dateTime: endISO, timeZone } },
       });
       await sb.from('calendar_links').insert({
         user_id: user.id, plan_id: p.id, google_calendar_id: calendarId,
