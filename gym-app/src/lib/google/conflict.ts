@@ -186,7 +186,7 @@ async function resolveOneConflict(
   // ---- Load plan row --------------------------------------------------
   const { data: plan } = await sb
     .from('plans')
-    .select('id, date, type, day_code, status, prescription')
+    .select('id, date, type, day_code, status, prescription, time_override')
     .eq('id', link.plan_id)
     .eq('user_id', link.user_id)
     .maybeSingle();

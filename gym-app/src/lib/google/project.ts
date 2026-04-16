@@ -27,6 +27,9 @@ export type PlanRow = {
   day_code: string | null;
   status: string;
   prescription: any; // jsonb
+  /** Per-plan start-time override (P1.5). When set, the projection uses
+   *  this instead of the user's training_preferences. */
+  time_override?: string | null;
 };
 
 export type TrainingPreferences = {
@@ -69,7 +72,15 @@ export function projectPlanToEvent(
   prefs: TrainingPreferences,
   timezone: string,
 ): GoogleEventBody {
-  const { startTime, durationMinutes } = resolveSessionTiming(plan.date, prefs);
+  // P1.5: a per-plan time_override (from meeting-conflict reschedule)
+  // takes precedence over the global training preferences.
+  const timing = plan.time_override
+    ? {
+        startTime: normalizeTime(plan.time_override),
+        durationMinutes: prefs.session_duration_minutes,
+      }
+    : resolveSessionTiming(plan.date, prefs);
+  const { startTime, durationMinutes } = timing;
 
   const startDT = `${plan.date}T${startTime}`;
   const endDT = `${plan.date}T${addMinutesToTime(startTime, durationMinutes)}`;

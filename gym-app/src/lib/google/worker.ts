@@ -305,7 +305,7 @@ async function processUpsert(
   // between enqueue and drain, treat as a no-op (mark done).
   const { data: plan, error: planErr } = await sb
     .from('plans')
-    .select('id, date, type, day_code, status, prescription')
+    .select('id, date, type, day_code, status, prescription, time_override')
     .eq('id', planId)
     .eq('user_id', job.user_id)
     .maybeSingle();
