@@ -5,18 +5,70 @@ import { supabaseBrowser } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import { useToast } from '@/components/ui/Toast';
+import WindowGlyph from '@/components/ui/WindowGlyph';
+import {
+  KIND_META,
+  formatRange,
+  relativeWindowPhrase,
+  resolvedStrategyLabel,
+} from '@/lib/availability/ui';
+import type {
+  AvailabilityWindowKind,
+  AvailabilityWindowStrategy,
+} from '@/lib/reconcile/rollForward.pure';
 
 type Phase = { id: string; code: string; name: string; status: string; target_ends_on: string | null; ordinal: number };
 type Exercise = { id: string; name: string; phases: string[]; pref: any | null };
 
+type AvailabilitySummary = {
+  todayIso: string;
+  activeNow: {
+    id: string;
+    starts_on: string;
+    ends_on: string;
+    kind: AvailabilityWindowKind;
+    strategy: AvailabilityWindowStrategy;
+  } | null;
+  upcomingCount: number;
+  totalActive: number;
+};
+
+type WeeklySlot = { type: string; day_code: string | null };
+type WeeklyPattern = Partial<Record<'SU' | 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA', WeeklySlot>>;
+type PhasePattern = { phase_id: string; pattern: WeeklyPattern };
+
+// DOW ordering for the tile strip. Monday-first reads more naturally for
+// training weeks than Sunday-first.
+const DOW_ORDER: Array<'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'SU'> = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+const DOW_LABEL: Record<string, string> = { MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu', FR: 'Fri', SA: 'Sat', SU: 'Sun' };
+const DOW_SHORT: Record<string, string> = { MO: 'M', TU: 'T', WE: 'W', TH: 'T', FR: 'F', SA: 'S', SU: 'S' };
+
+// Pairs with Tailwind tokens already in use elsewhere (bg-panel-2, accent-soft…).
+const TYPE_STYLE: Record<string, { bg: string; ring: string; text: string; icon: string; label: string }> = {
+  gym:  { bg: 'bg-accent-soft',     ring: 'ring-accent/40',  text: 'text-accent',  icon: '🏋️', label: 'Gym' },
+  run:  { bg: 'bg-ok/15',           ring: 'ring-ok/40',      text: 'text-ok',      icon: '🏃', label: 'Run' },
+  bike: { bg: 'bg-ok/15',           ring: 'ring-ok/40',      text: 'text-ok',      icon: '🚴', label: 'Bike' },
+  swim: { bg: 'bg-ok/15',           ring: 'ring-ok/40',      text: 'text-ok',      icon: '🏊', label: 'Swim' },
+  yoga: { bg: 'bg-accent-soft',     ring: 'ring-accent/40',  text: 'text-accent',  icon: '🧘', label: 'Yoga' },
+  climb:{ bg: 'bg-accent-soft',     ring: 'ring-accent/40',  text: 'text-accent',  icon: '🧗', label: 'Climb' },
+  rest: { bg: 'bg-panel-2',         ring: 'ring-border',     text: 'text-muted-2', icon: '·',  label: 'Rest' },
+};
+
+function typeStyle(type: string | undefined) {
+  if (!type) return TYPE_STYLE.rest;
+  return TYPE_STYLE[type] ?? { bg: 'bg-panel-2', ring: 'ring-border', text: 'text-muted', icon: '•', label: type };
+}
+
 export default function YouClient({
-  user, activePhase, phases, google, exercises,
+  user, activePhase, phases, google, exercises, weeklyPatterns, availability,
 }: {
   user: { email: string; id: string };
   activePhase: Phase | null;
   phases: Phase[];
   google: { connected: boolean; expiresAt: string | null; eventCount: number; linkCount: number };
   exercises: Exercise[];
+  weeklyPatterns: PhasePattern[];
+  availability: AvailabilitySummary;
 }) {
   return (
     <main className="max-w-xl mx-auto px-4 pt-5 pb-28 space-y-5">
@@ -30,6 +82,8 @@ export default function YouClient({
       </header>
 
       <PhaseSection activePhase={activePhase} phases={phases} />
+      <WeeklyTemplateSection activePhase={activePhase} weeklyPatterns={weeklyPatterns} />
+      <AvailabilitySection availability={availability} />
       <ExercisesSection exercises={exercises} />
       <GoogleSection google={google} />
       <AccountSection />
@@ -99,6 +153,222 @@ function PhaseSection({ activePhase, phases }: { activePhase: Phase | null; phas
         )}
       </details>
     </section>
+  );
+}
+
+/* ───────────────────── Weekly template (P1.1) ───────────────────── */
+
+/**
+ * Read-only snapshot of the active phase's weekly template, with seven
+ * tinted day tiles (Mon-first) and a summary line. Tapping Edit deep-links
+ * to /you/template for the active phase. If the user hasn't kicked off a
+ * phase yet, the section explains why it's empty instead of rendering
+ * blank tiles — better than an empty grid that looks broken.
+ */
+function WeeklyTemplateSection({
+  activePhase,
+  weeklyPatterns,
+}: {
+  activePhase: Phase | null;
+  weeklyPatterns: PhasePattern[];
+}) {
+  if (!activePhase) {
+    return (
+      <section className="rounded-xl bg-panel border border-border p-4">
+        <div className="text-tiny text-muted uppercase tracking-wider mb-1">Weekly template</div>
+        <div className="text-small text-muted-2">
+          Start a training phase to shape your week.
+        </div>
+      </section>
+    );
+  }
+
+  const pattern = weeklyPatterns.find((p) => p.phase_id === activePhase.id)?.pattern ?? {};
+
+  // Summary counts by type ("4 gym · 2 run · 1 rest"). Sorted so the most
+  // common type leads, with rest always last for consistency.
+  const counts = new Map<string, number>();
+  for (const dow of DOW_ORDER) {
+    const slot = pattern[dow];
+    const type = slot?.type ?? 'rest';
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  const summaryParts = Array.from(counts.entries())
+    .sort((a, b) => {
+      if (a[0] === 'rest') return 1;
+      if (b[0] === 'rest') return -1;
+      return b[1] - a[1];
+    })
+    .map(([type, n]) => `${n} ${typeStyle(type).label.toLowerCase()}`);
+
+  // Today's DOW so we can ring it. UTC-safe via manual parse.
+  const now = new Date();
+  const todayDow = DOW_ORDER[(now.getDay() + 6) % 7]; // JS Sun=0 → shift so MO=0
+
+  return (
+    <section className="rounded-xl bg-panel border border-border p-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <div className="text-tiny text-muted uppercase tracking-wider">Weekly template</div>
+          <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+            <div className="text-lg font-semibold">Your training week</div>
+            <div className="text-tiny text-muted-2 uppercase tracking-wider shrink-0">{activePhase.code}</div>
+          </div>
+          <div className="text-small text-muted-2 mt-1 truncate">{summaryParts.join(' · ')}</div>
+        </div>
+        <Link
+          href={`/you/template?phase=${activePhase.id}`}
+          className="shrink-0 text-tiny font-semibold text-accent hover:underline whitespace-nowrap"
+        >
+          Edit →
+        </Link>
+      </div>
+
+      <ul className="grid grid-cols-7 gap-1.5">
+        {DOW_ORDER.map((dow) => {
+          const slot = pattern[dow];
+          const st = typeStyle(slot?.type ?? 'rest');
+          const isToday = dow === todayDow;
+          return (
+            <li
+              key={dow}
+              className={`rounded-lg ${st.bg} ring-1 ${st.ring} ${isToday ? 'ring-2 ring-accent' : ''} px-1 py-2 text-center min-h-[72px] flex flex-col justify-between`}
+            >
+              <div className={`text-tiny uppercase tracking-wider ${isToday ? 'text-accent font-semibold' : 'text-muted-2'}`}>
+                {DOW_SHORT[dow]}
+              </div>
+              <div className="text-base leading-none" aria-hidden>{st.icon}</div>
+              <div className={`text-tiny ${st.text} font-medium truncate`}>
+                {slot?.day_code ?? st.label}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/* ───────────────────── Availability (P1.3) ───────────────────── */
+
+/**
+ * Entry card for /you/availability. Surfaces the most important
+ * window state at a glance:
+ *
+ *   - A window is active right now → show kind glyph + range + what
+ *     the resolved strategy is (bodyweight / rest / hidden)
+ *   - No active but something is upcoming → show "X queued" line
+ *   - Nothing at all → brief explainer + single CTA
+ *
+ * Tapping the card (or the chevron) takes the user to the full list
+ * where they can add / edit / cancel.
+ */
+function AvailabilitySection({ availability }: { availability: AvailabilitySummary }) {
+  const { activeNow, upcomingCount, todayIso } = availability;
+
+  // ---- Empty state ----------------------------------------------------
+  if (!activeNow && upcomingCount === 0) {
+    return (
+      <section className="rounded-xl bg-panel border border-border p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-tiny text-muted uppercase tracking-wider">Availability</div>
+            <div className="text-lg font-semibold mt-1">Plan around life</div>
+            <p className="text-small text-muted-2 mt-1 leading-relaxed">
+              Travelling, injured, or just need a break? Tell Claude when you&apos;re out and
+              the week adjusts itself — bodyweight days, rest, or a clean pause.
+            </p>
+          </div>
+        </div>
+        <Link
+          href="/you/availability"
+          className="mt-3 inline-flex items-center gap-1.5 text-tiny font-semibold text-accent hover:underline"
+        >
+          Add a window
+          <span aria-hidden>→</span>
+        </Link>
+      </section>
+    );
+  }
+
+  // ---- Active + upcoming summary -------------------------------------
+  return (
+    <Link
+      href="/you/availability"
+      className="group block rounded-xl bg-panel border border-border p-4 transition hover:border-muted-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-tiny text-muted uppercase tracking-wider">Availability</div>
+          {activeNow ? (
+            <ActiveWindowRow
+              kind={activeNow.kind}
+              strategy={activeNow.strategy}
+              startsOn={activeNow.starts_on}
+              endsOn={activeNow.ends_on}
+              todayIso={todayIso}
+            />
+          ) : (
+            <div className="mt-1">
+              <div className="text-lg font-semibold">Nothing active</div>
+              <div className="text-small text-muted-2 mt-0.5">
+                {upcomingCount === 1
+                  ? '1 window queued for later'
+                  : `${upcomingCount} windows queued for later`}
+              </div>
+            </div>
+          )}
+          {activeNow && upcomingCount > 0 && (
+            <div className="text-tiny text-muted-2 mt-2">
+              {upcomingCount === 1 ? '+1 more queued' : `+${upcomingCount} more queued`}
+            </div>
+          )}
+        </div>
+        <span
+          className="shrink-0 mt-1 text-muted-2 transition group-hover:text-muted"
+          aria-hidden
+        >
+          ›
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+function ActiveWindowRow({
+  kind,
+  strategy,
+  startsOn,
+  endsOn,
+  todayIso,
+}: {
+  kind: AvailabilityWindowKind;
+  strategy: AvailabilityWindowStrategy;
+  startsOn: string;
+  endsOn: string;
+  todayIso: string;
+}) {
+  const meta = KIND_META[kind];
+  const remaining = relativeWindowPhrase(startsOn, endsOn, todayIso);
+  const resolved = resolvedStrategyLabel(kind, strategy).toLowerCase();
+  return (
+    <div className="mt-1 flex items-center gap-2.5">
+      <span
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${meta.tint.bg}`}
+        aria-hidden
+      >
+        <WindowGlyph kind={kind} size={20} />
+      </span>
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-lg font-semibold">{meta.longLabel}</span>
+          <span className="text-tiny text-muted-2 shrink-0">{formatRange(startsOn, endsOn)}</span>
+        </div>
+        <div className="text-tiny text-muted-2 mt-0.5">
+          {remaining} · <span className="text-muted">{resolved}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 

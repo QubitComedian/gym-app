@@ -3,6 +3,7 @@ import { supabaseServer } from '@/lib/supabase/server';
 import { buildAIContext } from '@/lib/ai/context';
 import { callClaudeJSON, REVIEW_SYSTEM } from '@/lib/ai/anthropic';
 import { reconcile } from '@/lib/reconcile';
+import { enqueuePlanSync } from '@/lib/plans/write';
 import { z } from 'zod';
 
 export const maxDuration = 60;
@@ -42,9 +43,25 @@ export async function POST(req: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   if (b.plan_id) {
-    await sb.from('plans').update({
-      status: b.status === 'skipped' ? 'skipped' : 'done',
-    }).eq('id', b.plan_id).eq('user_id', user.id);
+    const { error: planUpdErr } = await sb
+      .from('plans')
+      .update({
+        status: b.status === 'skipped' ? 'skipped' : 'done',
+      })
+      .eq('id', b.plan_id)
+      .eq('user_id', user.id);
+
+    // Enqueue a calendar-sync upsert for the plan whose status just
+    // changed. The worker (PR-T) will re-project the plan to its
+    // Google Calendar event; if nothing visible changed (today we only
+    // flipped status), the etag compare will no-op. Keeping the hook
+    // here means later UX decisions — strikethrough done events, mark
+    // skipped with a color — can ship without another write-path pass.
+    // Swallow errors silently: the primary action (activity inserted)
+    // has already succeeded.
+    if (!planUpdErr) {
+      await enqueuePlanSync(sb, user.id, { upsertIds: [b.plan_id] });
+    }
   }
 
   // Auto-review on save-as-done — runs inline (serverless, same context) and

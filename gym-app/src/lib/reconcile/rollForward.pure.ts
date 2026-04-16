@@ -47,10 +47,191 @@ export type PlanInsert = {
   phase_id: string | null;
   calendar_event_id: string | null;
   status: 'planned';
-  source: 'template';
+  /** 'template' for normal forward fill; 'availability_window' when a
+   *  user-declared window (travel/injury/pause) rewrites the slot. */
+  source: 'template' | 'availability_window';
   prescription: unknown;
   ai_rationale: string | null;
+  /** FK to availability_windows.id when source='availability_window'. */
+  window_id?: string | null;
 };
+
+// -------- availability windows (P1.3) --------------------------------
+
+/**
+ * Window kind — what sort of disruption this is. Drives the default
+ * strategy when the user picks 'auto'. Must match the DB enum in
+ * migration 0006.
+ */
+export type AvailabilityWindowKind = 'travel' | 'injury' | 'pause';
+
+/**
+ * How roll-forward rewrites plan rows that fall inside an active
+ * window. `auto` is resolved to the kind default by
+ * `resolveWindowStrategy`. `suppress` writes no row at all — the date
+ * is simply left empty.
+ */
+export type AvailabilityWindowStrategy =
+  | 'auto'
+  | 'bodyweight'
+  | 'rest'
+  | 'suppress';
+
+/** The resolved (non-'auto') strategy actually used at emit time. */
+export type ResolvedWindowStrategy = Exclude<AvailabilityWindowStrategy, 'auto'>;
+
+/** Narrow view of an `availability_windows` row the reconciler needs. */
+export type ActiveWindow = {
+  id: string;
+  starts_on: string;         // ISO (inclusive)
+  ends_on: string;           // ISO (inclusive)
+  kind: AvailabilityWindowKind;
+  strategy: AvailabilityWindowStrategy;
+  note: string | null;
+};
+
+/**
+ * Resolve `auto` → the kind default:
+ *   - travel  → 'bodyweight'  (user has limited equipment but wants to move)
+ *   - injury  → 'rest'        (protect recovery by default)
+ *   - pause   → 'rest'        (explicit off-period)
+ *
+ * Explicit strategies ('bodyweight', 'rest', 'suppress') pass through.
+ */
+export function resolveWindowStrategy(
+  kind: AvailabilityWindowKind,
+  strategy: AvailabilityWindowStrategy
+): ResolvedWindowStrategy {
+  if (strategy !== 'auto') return strategy;
+  switch (kind) {
+    case 'travel': return 'bodyweight';
+    case 'injury': return 'rest';
+    case 'pause':  return 'rest';
+  }
+}
+
+/**
+ * Precedence when multiple active windows overlap the same date.
+ *
+ * Higher number = wins. The user created both windows deliberately, so
+ * we don't want to throw an error — we apply the more restrictive one.
+ *   - pause (3) > injury (2) > travel (1)        kind precedence
+ *   - rest (3)  > bodyweight (2) > suppress (1)  strategy precedence
+ *
+ * `suppress` ranks lowest because it's the "do nothing" option — if
+ * another active window wants to write a rest or bodyweight row, that's
+ * strictly more informative for the UI.
+ */
+function kindRank(k: AvailabilityWindowKind): number {
+  return k === 'pause' ? 3 : k === 'injury' ? 2 : 1;
+}
+function strategyRank(s: ResolvedWindowStrategy): number {
+  return s === 'rest' ? 3 : s === 'bodyweight' ? 2 : 1;
+}
+
+/**
+ * Index windows by date for O(1) lookup during the roll-forward loop.
+ *
+ * Only dates in [rangeStart, rangeEnd] inclusive are populated — we
+ * don't want to materialize a multi-year window into a giant map just
+ * to touch the next 21 days. If two windows cover the same date, the
+ * one ranking higher via `kindRank + strategyRank` wins.
+ */
+export function indexWindowsByDate(args: {
+  windows: readonly ActiveWindow[];
+  rangeStart: string;
+  rangeEnd: string;
+}): Map<string, ActiveWindow> {
+  const { windows, rangeStart, rangeEnd } = args;
+  const map = new Map<string, ActiveWindow>();
+  for (const w of windows) {
+    const start = w.starts_on > rangeStart ? w.starts_on : rangeStart;
+    const end = w.ends_on < rangeEnd ? w.ends_on : rangeEnd;
+    if (start > end) continue;
+    let cur = start;
+    for (let i = 0; i < 400 && cur <= end; i += 1) {
+      const prior = map.get(cur);
+      if (!prior) {
+        map.set(cur, w);
+      } else {
+        // Tie-break: higher kind rank wins; ties go to higher strategy rank.
+        const priorKR = kindRank(prior.kind);
+        const nextKR = kindRank(w.kind);
+        if (nextKR > priorKR) {
+          map.set(cur, w);
+        } else if (nextKR === priorKR) {
+          const priorSR = strategyRank(resolveWindowStrategy(prior.kind, prior.strategy));
+          const nextSR = strategyRank(resolveWindowStrategy(w.kind, w.strategy));
+          if (nextSR > priorSR) map.set(cur, w);
+        }
+      }
+      cur = addDaysIso(cur, 1);
+    }
+  }
+  return map;
+}
+
+/**
+ * Build a window-shaped plan row, or null when the resolved strategy
+ * is 'suppress' (we deliberately write nothing).
+ *
+ * Rows carry `source='availability_window'` and `window_id`. No
+ * calendar_event_id — windows are, by definition, a departure from the
+ * templated program.
+ */
+export function buildWindowPlanForDate(args: {
+  userId: string;
+  iso: string;
+  window: ActiveWindow;
+  /** Phase the date lands in, if any. Preserved for reporting; can be null. */
+  phase: PhaseRow | null;
+}): PlanInsert | null {
+  const { userId, iso, window, phase } = args;
+  const strat = resolveWindowStrategy(window.kind, window.strategy);
+  if (strat === 'suppress') return null;
+
+  const noteTag = window.note ? ` (${window.note})` : '';
+  const kindLabel =
+    window.kind === 'travel'
+      ? 'travel window'
+      : window.kind === 'injury'
+      ? 'injury window'
+      : 'pause window';
+
+  if (strat === 'rest') {
+    return {
+      user_id: userId,
+      date: iso,
+      type: 'rest',
+      day_code: null,
+      phase_id: phase?.id ?? null,
+      calendar_event_id: null,
+      status: 'planned',
+      source: 'availability_window',
+      prescription: {},
+      ai_rationale: `Rest day — inside ${kindLabel}${noteTag}.`,
+      window_id: window.id,
+    };
+  }
+
+  // 'bodyweight' — emit a bodyweight-type plan. Prescription is left
+  // empty; downstream UI (or a later PR) can populate a default
+  // bodyweight routine. Keeping it empty here means the row shows up
+  // as a clear placeholder rather than a fake specific prescription.
+  return {
+    user_id: userId,
+    date: iso,
+    type: 'bodyweight',
+    day_code: null,
+    phase_id: phase?.id ?? null,
+    calendar_event_id: null,
+    status: 'planned',
+    source: 'availability_window',
+    prescription: {},
+    ai_rationale: `Bodyweight session — inside ${kindLabel}${noteTag}.`,
+    window_id: window.id,
+  };
+}
 
 /**
  * Return the day-of-week code ('MO' / 'TU' / …) for an ISO date string,
@@ -105,6 +286,27 @@ export function activePhaseFor(
 }
 
 /**
+ * Resolve the weekly pattern for a given phase.
+ *
+ * Accepts either a single `WeeklyPattern` (legacy callers) or a
+ * `ReadonlyMap<phase_id, WeeklyPattern>` (P1.1 per-phase templates).
+ * Returns `null` when the map has no entry for this phase — the caller
+ * treats that the same as a missing weekly-pattern slot.
+ */
+export type PatternResolver =
+  | WeeklyPattern
+  | ReadonlyMap<string, WeeklyPattern>;
+
+export function resolvePatternForPhase(
+  resolver: PatternResolver,
+  phaseId: string
+): WeeklyPattern | null {
+  if (resolver instanceof Map) return resolver.get(phaseId) ?? null;
+  // Plain object — treat as a single pattern shared across phases.
+  return resolver as WeeklyPattern;
+}
+
+/**
  * Build the plan row for a single date, or return `null` if we can't —
  * no active phase (reconciler stops at the phase boundary in PR-B;
  * phase-transition proposals come in P1.2), missing weekly-pattern slot,
@@ -112,22 +314,43 @@ export function activePhaseFor(
  *
  * Rest days are still inserted (status='planned', type='rest') because
  * the UI renders rest as a positive plan, not an absence.
+ *
+ * `weeklyPattern` accepts either a single WeeklyPattern (legacy) or a
+ * Map<phase_id, WeeklyPattern> (P1.1) — see `PatternResolver`.
  */
 export function buildPlanForDate(args: {
   userId: string;
   iso: string;
-  weeklyPattern: WeeklyPattern;
+  weeklyPattern: PatternResolver;
   phases: readonly PhaseRow[];
   eventsByPhaseDay: ReadonlyMap<string, CalendarEventRow>;
+  /**
+   * Optional per-date window index. When set and the date falls in an
+   * active window, the window's strategy overrides the weekly template
+   * — the function emits a window-shaped row (or null for 'suppress').
+   */
+  windowsByDate?: ReadonlyMap<string, ActiveWindow>;
 }): PlanInsert | null {
-  const { userId, iso, weeklyPattern, phases, eventsByPhaseDay } = args;
+  const { userId, iso, weeklyPattern, phases, eventsByPhaseDay, windowsByDate } = args;
 
   const phase = activePhaseFor(iso, phases);
+
+  // Windows win over the template. If the date is covered, emit the
+  // window-shaped row — even outside any phase (windows are a
+  // user-level declaration, not phase-bound).
+  const window = windowsByDate?.get(iso);
+  if (window) {
+    return buildWindowPlanForDate({ userId, iso, window, phase });
+  }
+
   if (!phase) return null; // outside any phase → skip (P1.2 handles this)
 
+  const pattern = resolvePatternForPhase(weeklyPattern, phase.id);
+  if (!pattern) return null; // no template for this phase
+
   const dow = dowCodeOf(iso);
-  const slot = weeklyPattern[dow];
-  if (!slot) return null; // program config doesn't cover this DOW
+  const slot = pattern[dow];
+  if (!slot) return null; // template doesn't cover this DOW
 
   // Rest days: no calendar event lookup, empty prescription.
   if (slot.type === 'rest') {
@@ -177,16 +400,27 @@ export function buildPlansForWindow(args: {
   startIso: string;
   windowDays: number;
   occupied: ReadonlySet<string>;
-  weeklyPattern: WeeklyPattern;
+  weeklyPattern: PatternResolver;
   phases: readonly PhaseRow[];
   eventsByPhaseDay: ReadonlyMap<string, CalendarEventRow>;
+  /**
+   * Optional: active availability windows overlapping [startIso,
+   * startIso+windowDays). If any cover a date, the window's strategy
+   * overrides the weekly template on that date.
+   */
+  windowsByDate?: ReadonlyMap<string, ActiveWindow>;
 }): PlanInsert[] {
-  const { userId, startIso, windowDays, occupied, weeklyPattern, phases, eventsByPhaseDay } = args;
+  const {
+    userId, startIso, windowDays, occupied,
+    weeklyPattern, phases, eventsByPhaseDay, windowsByDate,
+  } = args;
 
   const out: PlanInsert[] = [];
   for (const iso of datesFrom(startIso, windowDays)) {
     if (occupied.has(iso)) continue;
-    const row = buildPlanForDate({ userId, iso, weeklyPattern, phases, eventsByPhaseDay });
+    const row = buildPlanForDate({
+      userId, iso, weeklyPattern, phases, eventsByPhaseDay, windowsByDate,
+    });
     if (row) out.push(row);
   }
   return out;

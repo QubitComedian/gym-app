@@ -7,6 +7,10 @@
 
 import { addDays, differenceInCalendarWeeks, format, parseISO, startOfWeek, endOfWeek } from 'date-fns';
 import { tonnageOf } from './wins';
+import type {
+  AvailabilityWindowKind,
+  AvailabilityWindowStrategy,
+} from './reconcile/rollForward.pure';
 
 export type DayState =
   | 'today_planned' | 'today_done' | 'today_rest' | 'today_empty'
@@ -20,6 +24,17 @@ export type DayCell = {
   type?: string;        // modality for glyph
   isToday: boolean;
   href: string;
+  /**
+   * Availability-window coverage for this day — undefined when no
+   * active window covers it. Present for travel / injury / pause days
+   * so the strip can overlay a small kind badge. The plan row itself
+   * will already be rewritten by roll-forward; this is the visual cue
+   * that says "this is a window day, not a normal template day".
+   */
+  window?: {
+    kind: AvailabilityWindowKind;
+    strategy: AvailabilityWindowStrategy;
+  };
 };
 
 export type WeekSummary = {
@@ -39,6 +54,12 @@ export type WeekSummary = {
 type PlanRow = { id?: string; date: string; type: string; day_code?: string | null; status: string };
 type ActRow = { id?: string; date: string; type: string; status: string; data?: any; plan_id?: string | null };
 type PhaseRow = { code: string; name: string; starts_on: string | null; target_ends_on: string | null };
+type WindowRow = {
+  starts_on: string;
+  ends_on: string;
+  kind: AvailabilityWindowKind;
+  strategy: AvailabilityWindowStrategy;
+};
 
 const DOW = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
 
@@ -47,6 +68,8 @@ export function summarizeWeek(opts: {
   plans: PlanRow[];
   activities: ActRow[];
   phase: PhaseRow | null;
+  /** Active availability windows that might intersect this week. Optional — callers that don't care about window overlays can omit. */
+  windows?: WindowRow[];
 }): WeekSummary {
   const today = parseISO(opts.onDate + 'T00:00:00');
   const weekStart = startOfWeek(today, { weekStartsOn: 1 });
@@ -68,6 +91,7 @@ export function summarizeWeek(opts: {
     }
   }
 
+  const windows = opts.windows ?? [];
   const days: DayCell[] = [];
   for (let i = 0; i < 7; i++) {
     const d = addDays(weekStart, i);
@@ -78,6 +102,10 @@ export function summarizeWeek(opts: {
     const act = actByDate.get(iso) ?? null;
     const type = act?.type ?? plan?.type;
     const state = dayState({ isToday, isPast, plan, act });
+    // Inclusive coverage test. Overlap-free invariant means at most
+    // one window matches; if the invariant ever slipped we surface the
+    // first we find (strip is visual-only, so ties are cosmetic).
+    const covering = windows.find(w => w.starts_on <= iso && w.ends_on >= iso);
     days.push({
       date: iso,
       dow: DOW[i],
@@ -85,6 +113,9 @@ export function summarizeWeek(opts: {
       type,
       isToday,
       href: isToday ? '/today' : `/calendar/${iso}`,
+      window: covering
+        ? { kind: covering.kind, strategy: covering.strategy }
+        : undefined,
     });
   }
 

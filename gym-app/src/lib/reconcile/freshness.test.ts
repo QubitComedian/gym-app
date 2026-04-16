@@ -123,5 +123,16 @@ describe('checkFreshness', () => {
       });
       assert.deepEqual(r, { shouldRun: true });
     });
+
+    it('runs for template_updated even if recently reconciled', () => {
+      // The user just saved a new weekly shape. We need the reconciler
+      // to repopulate with the new pattern right away.
+      const r = checkFreshness({
+        cause: 'template_updated',
+        lastReconciledAt: minutesAgo(1),
+        now: NOW,
+      });
+      assert.deepEqual(r, { shouldRun: true });
+    });
   });
 });

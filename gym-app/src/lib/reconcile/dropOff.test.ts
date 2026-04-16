@@ -26,6 +26,7 @@ import {
   buildReturnFromGapDiff,
   buildShiftWeekDiff,
   classifyGap,
+  computeEffectiveGapDays,
   computeGapDays,
   daysBetweenIso,
   decorateWithDeload,
@@ -150,6 +151,88 @@ describe('computeGapDays', () => {
 
   it('returns 0 when last-done is today', () => {
     assert.equal(computeGapDays('2026-04-15', '2026-04-15'), 0);
+  });
+});
+
+// -------- computeEffectiveGapDays -----------------------------------
+
+describe('computeEffectiveGapDays', () => {
+  it('returns null when there is no last-done date', () => {
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', null, new Set<string>()),
+      null,
+    );
+  });
+
+  it('returns 0 when last-done is today (no gap to adjust)', () => {
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-15', new Set<string>()),
+      0,
+    );
+  });
+
+  it('passes through raw gap when no windows are supplied', () => {
+    // 13-day gap, no window coverage → effective = raw.
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-02', new Set<string>()),
+      13,
+    );
+  });
+
+  it('returns 0 when every gap day is window-covered', () => {
+    // 5-day gap (Apr 11–15). All 5 days in the set → effective 0.
+    const covered = new Set(['2026-04-11', '2026-04-12', '2026-04-13', '2026-04-14', '2026-04-15']);
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-10', covered),
+      0,
+    );
+  });
+
+  it('subtracts partial window coverage from the gap', () => {
+    // Raw gap = 13 (lastDone Apr 2, today Apr 15). Covered range Apr 3–12
+    // is 10 days → uncovered Apr 13, 14, 15 = 3.
+    const covered = new Set<string>();
+    for (let i = 3; i <= 12; i += 1) covered.add(`2026-04-${String(i).padStart(2, '0')}`);
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-02', covered),
+      3,
+    );
+  });
+
+  it('ignores window dates outside the gap range (clipping upstream)', () => {
+    // The enumerate loop walks (lastDone, today]. A stray Apr 2 (=lastDone)
+    // or Apr 16 (>today) in the set shouldn't affect the count.
+    const covered = new Set(['2026-04-02', '2026-04-16', '2026-04-17']);
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-02', covered),
+      13,
+    );
+  });
+
+  it('counts the boundary day after lastDone correctly', () => {
+    // 2-day gap (Apr 14–15). Covering just Apr 14 leaves Apr 15 uncovered.
+    const covered = new Set(['2026-04-14']);
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-13', covered),
+      1,
+    );
+  });
+
+  it('counts today correctly when covered', () => {
+    // 2-day gap (Apr 14–15). Covering just Apr 15 leaves Apr 14 uncovered.
+    const covered = new Set(['2026-04-15']);
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-13', covered),
+      1,
+    );
+  });
+
+  it('passes through when lastDone is in the future (clamped to 0)', () => {
+    // Clock skew: future lastDone. computeGapDays clamps to 0, so effective 0.
+    assert.equal(
+      computeEffectiveGapDays('2026-04-15', '2026-04-20', new Set<string>()),
+      0,
+    );
   });
 });
 
@@ -475,5 +558,124 @@ describe('buildReturnFromGapDiff', () => {
       tier: 'hard_extended',
     });
     assert.match(ext!.rationale, /^Headline:/m);
+  });
+
+  // ---------- P1.3 window-aware rationale ----------------------------
+
+  it('omits window nuance line when windowDays is 0 (effective === raw)', () => {
+    const got = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 5,
+      effectiveGapDays: 5,
+      windowDays: 0,
+      lastDoneIso: '2026-04-10',
+      tier: 'soft',
+    });
+    assert.ok(got);
+    // Classic copy: "X days since your last session."
+    assert.match(got!.rationale, /5 days since your last session/);
+    assert.doesNotMatch(got!.rationale, /availability window/);
+    assert.equal(got!.effective_gap_days, 5);
+    assert.equal(got!.window_days, 0);
+  });
+
+  it('adds window nuance line when part of the gap is covered', () => {
+    // Raw gap=13 days (Apr 2→15). 10 on a window, 3 training days.
+    const got = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 13,
+      effectiveGapDays: 3,
+      windowDays: 10,
+      lastDoneIso: '2026-04-02',
+      tier: 'soft', // classified off effective (3) → soft
+    });
+    assert.ok(got);
+    // Nuance copy: "N training day(s) since your last session (M on your availability window)."
+    assert.match(
+      got!.rationale,
+      /3 training days since your last session \(10 on your availability window\)/,
+    );
+    assert.equal(got!.gap_days, 13);
+    assert.equal(got!.effective_gap_days, 3);
+    assert.equal(got!.window_days, 10);
+  });
+
+  it('singularizes "training day" when effective gap is 1', () => {
+    const got = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 5,
+      effectiveGapDays: 1,
+      windowDays: 4,
+      lastDoneIso: '2026-04-10',
+      tier: 'soft',
+    });
+    assert.ok(got);
+    // "1 training day" (singular), not "1 training days".
+    assert.match(got!.rationale, /1 training day since your last session/);
+    assert.doesNotMatch(got!.rationale, /training days since/);
+  });
+
+  it('defaults effectiveGapDays to gapDays when omitted (pre-P1.3 callers)', () => {
+    const got = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 7,
+      lastDoneIso: '2026-04-08',
+      tier: 'hard',
+    });
+    assert.ok(got);
+    // No window info → classic copy, diff fields mirror gapDays.
+    assert.match(got!.rationale, /7 days since your last session/);
+    assert.equal(got!.effective_gap_days, 7);
+    assert.equal(got!.window_days, 0);
+  });
+
+  it('hard_extended with windows preserves the nuance + recommends reassess', () => {
+    // Raw gap=21, windows covered 7, effective=14 → hard_extended by effective.
+    const got = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 21,
+      effectiveGapDays: 14,
+      windowDays: 7,
+      lastDoneIso: '2026-03-25',
+      tier: 'hard_extended',
+    });
+    assert.ok(got);
+    assert.match(
+      got!.rationale,
+      /14 training days since your last session \(7 on your availability window\)/,
+    );
+    assert.equal(got!.default_option_id, 'reassess');
+    const reassess = got!.options.find((o) => o.id === 'reassess')!;
+    assert.equal(reassess.recommended, true);
+  });
+
+  it('Headline prefix is present on every window-nuanced tier', () => {
+    const softW = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 9,
+      effectiveGapDays: 4,
+      windowDays: 5,
+      lastDoneIso: '2026-04-06',
+      tier: 'soft',
+    });
+    const hardW = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 15,
+      effectiveGapDays: 8,
+      windowDays: 7,
+      lastDoneIso: '2026-03-31',
+      tier: 'hard',
+    });
+    const extW = buildReturnFromGapDiff({
+      ctx,
+      gapDays: 25,
+      effectiveGapDays: 14,
+      windowDays: 11,
+      lastDoneIso: '2026-03-21',
+      tier: 'hard_extended',
+    });
+    assert.match(softW!.rationale, /^Headline:/m);
+    assert.match(hardW!.rationale, /^Headline:/m);
+    assert.match(extW!.rationale, /^Headline:/m);
   });
 });

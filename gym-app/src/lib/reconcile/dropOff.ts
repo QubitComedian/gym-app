@@ -1,18 +1,24 @@
 /**
- * Drop-off detection (P1.0 / PR-C).
+ * Drop-off detection (P1.0 / PR-C, extended in P1.3 / PR-P).
  *
  * When a user returns after ≥ 3 days without a logged activity, create a
  * single `return_from_gap` proposal offering tiered recovery options.
  * Rules (from docs/p1-0-implementation.md §5, §6):
  *
  *   - No historical done activities → skip (first-ever user, not a return).
- *   - gap_days < 3 → skip.
- *   - gap_days 3..6  → 'soft' banner proposal:
+ *   - effective_gap_days < 3 → skip.
+ *   - effective_gap_days 3..6  → 'soft' banner proposal:
  *                        shift_week (recommended), jump_back_in
- *   - gap_days 7..13 → 'hard' hero proposal:
+ *   - effective_gap_days 7..13 → 'hard' hero proposal:
  *                        reentry_soft (recommended), jump_back_in, reassess
- *   - gap_days ≥ 14  → 'hard_extended' hero proposal:
+ *   - effective_gap_days ≥ 14  → 'hard_extended' hero proposal:
  *                        reentry_full, jump_back_in, reassess (recommended)
+ *
+ * Window-adjusted gap (P1.3): days inside an active availability window
+ * (travel/injury/pause) are user-declared "not training" days and are
+ * excluded from the gap count. If every gap day is window-covered, the
+ * effective gap is 0 and we skip the proposal entirely — the user
+ * already told us they were off, no need to welcome them back.
  *
  * Idempotency contract: don't create a new proposal if one already exists
  * (in any state) with `created_at > last_done_date`. The previous gap has
@@ -29,9 +35,17 @@ import {
   DROP_OFF_THRESHOLD_DAYS,
   buildReturnFromGapDiff,
   classifyGap,
+  computeEffectiveGapDays,
   computeGapDays,
 } from './dropOff.pure';
-import { addDaysIso, type CalendarEventRow, type PhaseRow, type WeeklyPattern } from './rollForward.pure';
+import {
+  addDaysIso,
+  indexWindowsByDate,
+  type ActiveWindow,
+  type CalendarEventRow,
+  type PhaseRow,
+} from './rollForward.pure';
+import { getAllWeeklyPatternsForUser } from '@/lib/templates/loader';
 
 // Re-export for callers that still import the constant from this module.
 export { DROP_OFF_THRESHOLD_DAYS } from './dropOff.pure';
@@ -68,15 +82,63 @@ export async function detectDropOff(opts: {
   const lastDoneIso: string | null = lastDone?.date ?? null;
   if (!lastDoneIso) return { drop_off_detected: false };
 
-  // 2. Gap math + tier.
+  // 2. Raw gap math. Effective (window-adjusted) gap is computed next,
+  //    once we've loaded the user's active availability windows. Early
+  //    out only on the trivially-small raw cases where even a
+  //    window-less user wouldn't qualify.
   const gapDays = computeGapDays(todayIso, lastDoneIso);
   if (gapDays === null) return { drop_off_detected: false };
-  const tier = classifyGap(gapDays);
-  if (tier === 'none' || gapDays < DROP_OFF_THRESHOLD_DAYS) {
+  if (gapDays < DROP_OFF_THRESHOLD_DAYS) {
     return { drop_off_detected: false };
   }
 
-  // 3. Idempotency gate: any return_from_gap proposal created after the
+  // 3. Load active availability windows that overlap the gap range
+  //    (lastDoneIso, todayIso]. The (user_id, status, ends_on, starts_on)
+  //    index in migration 0006 makes this a single seek. Windows are
+  //    optional — a failure shouldn't prevent a drop-off proposal on a
+  //    user with no windows.
+  const { data: windowsInGap, error: winErr } = await sb
+    .from('availability_windows')
+    .select('id, starts_on, ends_on, kind, strategy, note')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .gte('ends_on', lastDoneIso)
+    .lte('starts_on', todayIso);
+
+  if (winErr) {
+    console.error('[reconcile/dropOff] load windows failed (non-fatal)', winErr);
+  }
+
+  const activeWindows: ActiveWindow[] = (windowsInGap ?? []).map((w) => ({
+    id: w.id as string,
+    starts_on: w.starts_on as string,
+    ends_on: w.ends_on as string,
+    kind: w.kind as ActiveWindow['kind'],
+    strategy: w.strategy as ActiveWindow['strategy'],
+    note: (w.note ?? null) as string | null,
+  }));
+
+  // The gap range we care about for effective math is (lastDone, today].
+  // `indexWindowsByDate` handles clipping + precedence; we collapse to a
+  // simple Set<string> of covered dates for the pure gap helper.
+  const gapCoveredMap = indexWindowsByDate({
+    windows: activeWindows,
+    rangeStart: addDaysIso(lastDoneIso, 1),
+    rangeEnd: todayIso,
+  });
+  const gapCovered = new Set<string>(gapCoveredMap.keys());
+
+  const effectiveGap = computeEffectiveGapDays(todayIso, lastDoneIso, gapCovered) ?? 0;
+  const windowDaysInGap = gapDays - effectiveGap;
+
+  // 4. Classify on the window-adjusted gap. When every day was
+  //    window-covered, effective gap is zero → no banner.
+  const tier = classifyGap(effectiveGap);
+  if (tier === 'none' || effectiveGap < DROP_OFF_THRESHOLD_DAYS) {
+    return { drop_off_detected: false };
+  }
+
+  // 5. Idempotency gate: any return_from_gap proposal created after the
   //    last done activity means this gap has already been surfaced.
   //    Includes pending (don't stack), applied (user already picked an
   //    option), rejected (user dismissed the banner — don't nag).
@@ -98,38 +160,27 @@ export async function detectDropOff(opts: {
     return { drop_off_detected: true };
   }
 
-  // 4. Load program, phases, events — same inputs as roll-forward.
-  const [{ data: program, error: progErr }, { data: phases, error: phaseErr }] =
-    await Promise.all([
-      sb
-        .from('programs')
-        .select('id, config')
-        .eq('user_id', userId)
-        .eq('active', true)
-        .maybeSingle(),
-      sb
-        .from('phases')
-        .select('id, code, starts_on, target_ends_on')
-        .eq('user_id', userId)
-        .order('starts_on', { ascending: true }),
-    ]);
+  // 6. Load per-phase patterns + phases + events. Same inputs as
+  //    roll-forward. The loader falls back to the legacy program config
+  //    for phases without a weekly_templates row.
+  const [patternByPhase, { data: phases, error: phaseErr }] = await Promise.all([
+    getAllWeeklyPatternsForUser(sb, userId),
+    sb
+      .from('phases')
+      .select('id, code, starts_on, target_ends_on')
+      .eq('user_id', userId)
+      .order('starts_on', { ascending: true }),
+  ]);
 
-  if (progErr) {
-    console.error('[reconcile/dropOff] load program failed', progErr);
-    return { drop_off_detected: false };
-  }
   if (phaseErr) {
     console.error('[reconcile/dropOff] load phases failed', phaseErr);
     return { drop_off_detected: false };
   }
 
-  const weeklyPattern: WeeklyPattern =
-    (program as { config?: { split?: { weekly_pattern?: WeeklyPattern } } } | null)
-      ?.config?.split?.weekly_pattern ?? {};
   const phaseRows: PhaseRow[] = (phases ?? []) as PhaseRow[];
 
   if (phaseRows.length === 0) return { drop_off_detected: false };
-  if (Object.keys(weeklyPattern).length === 0) return { drop_off_detected: false };
+  if (patternByPhase.size === 0) return { drop_off_detected: false };
 
   const { data: events, error: evErr } = await sb
     .from('calendar_events')
@@ -147,7 +198,7 @@ export async function detectDropOff(opts: {
     eventsByPhaseDay.set(`${e.phase_id}:${e.day_code}`, e);
   }
 
-  // 5. Existing plans in the lookahead window, so option diffs can
+  // 7. Existing plans in the lookahead window, so option diffs can
   //    include `deletes` for rows they're about to replace.
   const lookaheadEnd = addDaysIso(todayIso, DROP_OFF_LOOKAHEAD_DAYS);
   const { data: plansInWindow, error: plansErr } = await sb
@@ -170,17 +221,21 @@ export async function detectDropOff(opts: {
     if (!prior || p.status === 'planned') plansByDate.set(p.date, { id: p.id, status: p.status });
   }
 
-  // 6. Build the diff (pure).
+  // 8. Build the diff (pure). `gapDays` stays as the raw calendar count
+  //    (UI banner copy), but tier + `effective_gap_days` drive the
+  //    decision + nuance line in the rationale.
   const diff = buildReturnFromGapDiff({
     ctx: {
       userId,
       todayIso,
-      weeklyPattern,
+      weeklyPattern: patternByPhase,
       phases: phaseRows,
       eventsByPhaseDay,
       plansByDate,
     },
     gapDays,
+    effectiveGapDays: effectiveGap,
+    windowDays: windowDaysInGap,
     lastDoneIso,
     tier,
   });

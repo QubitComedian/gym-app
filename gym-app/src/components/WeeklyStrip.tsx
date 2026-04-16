@@ -1,5 +1,7 @@
 import Link from 'next/link';
 import IconGlyph from './ui/IconGlyph';
+import WindowGlyph from './ui/WindowGlyph';
+import { KIND_META } from '@/lib/availability/ui';
 import type { WeekSummary, DayCell } from '@/lib/weekSummary';
 import { phaseLabelFor } from '@/lib/weekSummary';
 
@@ -35,11 +37,19 @@ export default function WeeklyStrip({ summary }: { summary: WeekSummary }) {
 
 function Dot({ day }: { day: DayCell }) {
   const { ring, fill, border, glyph, glyphColor, dashed, inner } = stateVisuals(day);
+  const windowMeta = day.window ? KIND_META[day.window.kind] : null;
+  // The badge sits over the dot's top-right corner. We give it a
+  // matching background color at the chip's tint and the panel-colored
+  // outline so it reads cleanly at 14px.
+  const label = [
+    `${day.dow} ${day.date}`,
+    windowMeta ? `(${windowMeta.label.toLowerCase()} window)` : null,
+  ].filter(Boolean).join(' ');
 
   return (
     <Link
       href={day.href}
-      aria-label={`${day.dow} ${day.date}`}
+      aria-label={label}
       className="flex flex-col items-center gap-1 py-1 group"
     >
       <div className={`text-[10px] uppercase tracking-wider ${day.isToday ? 'text-accent font-medium' : 'text-muted-2'}`}>
@@ -62,6 +72,14 @@ function Dot({ day }: { day: DayCell }) {
             <line x1="5" y1="5" x2="19" y2="19" />
             <line x1="19" y1="5" x2="5" y2="19" />
           </svg>
+        )}
+        {day.window && windowMeta && (
+          <span
+            className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-panel ring-1 ring-border"
+            aria-hidden
+          >
+            <WindowGlyph kind={day.window.kind} size={10} strokeWidth={2} />
+          </span>
         )}
       </div>
     </Link>

@@ -34,6 +34,7 @@ import {
   buildPlanForDate,
   type CalendarEventRow,
   type DowCode,
+  type PatternResolver,
   type PhaseRow,
   type PlanInsert,
   type WeeklyPattern,
@@ -90,6 +91,44 @@ export function computeGapDays(
   return n < 0 ? 0 : n;
 }
 
+/**
+ * Window-adjusted gap (P1.3).
+ *
+ * A day inside an active availability window (travel / injury / pause)
+ * is a user-declared "not training" day, not a drop-off gap day. We
+ * enumerate the gap range `(lastDoneIso, todayIso]` and subtract any
+ * day that appears in `windowCoveredDates` from the count.
+ *
+ * Why ALL window days regardless of strategy:
+ *   Even `travel` windows with `bodyweight` strategy represent a
+ *   deliberate user declaration — "I'll be traveling, bodyweight is the
+ *   fallback." If they skipped the bodyweight sessions, we don't want to
+ *   shame them with a drop-off banner; the window itself is the
+ *   acknowledgement. If we later need to distinguish (e.g. nag on
+ *   missed bodyweight weeks), callers can pass a filtered set.
+ *
+ * Returns `null` under the same conditions as `computeGapDays`.
+ * Returns `0` if every gap day is covered by a window (no effective gap).
+ */
+export function computeEffectiveGapDays(
+  todayIso: string,
+  lastDoneIso: string | null,
+  windowCoveredDates: ReadonlySet<string>
+): number | null {
+  const raw = computeGapDays(todayIso, lastDoneIso);
+  if (raw === null || raw === 0) return raw;
+  if (windowCoveredDates.size === 0) return raw;
+
+  // Enumerate (lastDoneIso, todayIso] and count uncovered days.
+  let uncovered = 0;
+  let cur = addDaysIso(lastDoneIso!, 1);
+  for (let i = 0; i < raw; i += 1) {
+    if (!windowCoveredDates.has(cur)) uncovered += 1;
+    cur = addDaysIso(cur, 1);
+  }
+  return uncovered;
+}
+
 export type GapTier = 'none' | 'soft' | 'hard' | 'hard_extended';
 
 export function classifyGap(gapDays: number | null): GapTier {
@@ -143,7 +182,30 @@ export type ReturnOption = {
  */
 export type ReturnFromGapDiff = {
   kind: 'return_from_gap';
+  /**
+   * Raw elapsed-day count since last_done_date. Used in the banner copy
+   * ("X days since your last session"). This is the calendar number the
+   * user sees on their timeline.
+   */
   gap_days: number;
+  /**
+   * Window-adjusted gap — days in the gap range that are NOT covered by
+   * an active availability window (travel/injury/pause). Tier
+   * classification runs off this value. When no windows overlap the gap,
+   * `effective_gap_days === gap_days`.
+   *
+   * Optional for backwards-compat with pre-P1.3 proposals written before
+   * this field existed. Callers reading the field should fall back to
+   * `gap_days`.
+   */
+  effective_gap_days?: number;
+  /**
+   * Count of days inside the gap range that were covered by an
+   * availability window. `gap_days = effective_gap_days + window_days`
+   * when both are present. UI can render "10 of those were on your
+   * travel window" when this is > 0.
+   */
+  window_days?: number;
   last_done_date: string;
   today: string;
   tier: GapTier;
@@ -211,7 +273,13 @@ export function decorateWithDeload(
 type BuildContext = {
   userId: string;
   todayIso: string;
-  weeklyPattern: WeeklyPattern;
+  /**
+   * Weekly pattern resolver. Accepts either a single `WeeklyPattern`
+   * (legacy) or a `Map<phase_id, WeeklyPattern>` (P1.1). Every option
+   * builder rotates per-phase so the shift / reentry helpers remain
+   * correct even when the window spans a phase boundary.
+   */
+  weeklyPattern: PatternResolver;
   phases: readonly PhaseRow[];
   eventsByPhaseDay: ReadonlyMap<string, CalendarEventRow>;
   /**
@@ -223,6 +291,25 @@ type BuildContext = {
 };
 
 /**
+ * Rotate every pattern in a per-phase map so `startDow` plays the MO
+ * slot. For a plain `WeeklyPattern` (legacy callers), rotates the whole
+ * pattern directly.
+ */
+export function rotatePatternResolver(
+  startDow: DowCode,
+  resolver: PatternResolver
+): PatternResolver {
+  if (resolver instanceof Map) {
+    const out = new Map<string, WeeklyPattern>();
+    for (const [phaseId, pattern] of resolver) {
+      out.set(phaseId, rotateWeeklyPattern(startDow, pattern));
+    }
+    return out;
+  }
+  return rotateWeeklyPattern(startDow, resolver as WeeklyPattern);
+}
+
+/**
  * Build the `shift_week` diff: take the next 7 days (today..today+6),
  * lay down a fresh rotated-pattern set of plans starting at today, and
  * soft-delete any planned rows already sitting on those dates.
@@ -232,7 +319,7 @@ type BuildContext = {
 export function buildShiftWeekDiff(ctx: BuildContext): ReturnOption['diff'] {
   const { userId, todayIso, weeklyPattern, phases, eventsByPhaseDay, plansByDate } = ctx;
   const startDow = dowCodeOf(todayIso);
-  const rotated = rotateWeeklyPattern(startDow, weeklyPattern);
+  const rotated = rotatePatternResolver(startDow, weeklyPattern);
 
   const deletes: string[] = [];
   const creates: ReturnOption['diff']['creates'] = [];
@@ -275,7 +362,7 @@ export function buildReentryDiff(
   const { userId, todayIso, weeklyPattern, phases, eventsByPhaseDay, plansByDate } = ctx;
   const startIso = addDaysIso(todayIso, 1);
   const startDow = dowCodeOf(startIso);
-  const rotated = rotateWeeklyPattern(startDow, weeklyPattern);
+  const rotated = rotatePatternResolver(startDow, weeklyPattern);
   const days = kind === 'soft' ? REENTRY_SOFT_DAYS : REENTRY_FULL_DAYS;
 
   const deletes: string[] = [];
@@ -339,14 +426,25 @@ export function buildReassessDiff(): ReturnOption['diff'] {
 /**
  * Build the full ReturnFromGapDiff for a given tier. Returns null when
  * tier === 'none' (caller decides not to create a proposal).
+ *
+ * `effectiveGapDays` and `windowDays` are optional (pre-P1.3 callers
+ * can omit them). When omitted, `gapDays` is used for all messaging.
+ * When provided and different from `gapDays`, the rationale includes
+ * a nuance line acknowledging the window-covered days.
  */
 export function buildReturnFromGapDiff(args: {
   ctx: BuildContext;
   gapDays: number;
   lastDoneIso: string;
   tier: GapTier;
+  /** Window-adjusted gap (tier-relevant count). Defaults to gapDays. */
+  effectiveGapDays?: number;
+  /** Days inside the gap range covered by an availability window. */
+  windowDays?: number;
 }): ReturnFromGapDiff | null {
   const { ctx, gapDays, lastDoneIso, tier } = args;
+  const effectiveGapDays = args.effectiveGapDays ?? gapDays;
+  const windowDays = args.windowDays ?? Math.max(0, gapDays - effectiveGapDays);
   if (tier === 'none') return null;
 
   const options: ReturnOption[] = [];
@@ -419,16 +517,28 @@ export function buildReturnFromGapDiff(args: {
     });
   }
 
+  // When windows covered part of the gap, weave that nuance into the
+  // copy so the banner doesn't shame a deliberate pause.
+  //   raw=13, effective=3, window=10 → "3 training days since your last
+  //     session (10 on your availability window)."
+  //   raw=effective → normal "X days since your last session" copy.
+  const sessionLine =
+    windowDays > 0
+      ? `${effectiveGapDays} training day${effectiveGapDays === 1 ? '' : 's'} since your last session (${windowDays} on your availability window).`
+      : `${gapDays} day${gapDays === 1 ? '' : 's'} since your last session.`;
+
   const rationale =
     tier === 'soft'
-      ? `Headline: Welcome back — ${gapDays} days since your last session.\nWant me to shift this week so it starts today?`
+      ? `Headline: Welcome back — ${sessionLine}\nWant me to shift this week so it starts today?`
       : tier === 'hard'
-      ? `Headline: Welcome back — ${gapDays} days since your last session.\nHere's how I'd pick things up:`
-      : `Headline: Welcome back — it's been ${gapDays} days.\nThat's a meaningful gap — let's rebuild carefully.`;
+      ? `Headline: Welcome back — ${sessionLine}\nHere's how I'd pick things up:`
+      : `Headline: Welcome back — ${sessionLine}\nThat's a meaningful gap — let's rebuild carefully.`;
 
   return {
     kind: 'return_from_gap',
     gap_days: gapDays,
+    effective_gap_days: effectiveGapDays,
+    window_days: windowDays,
     last_done_date: lastDoneIso,
     today: ctx.todayIso,
     tier,

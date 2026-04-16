@@ -6,11 +6,15 @@ import TodayHero from '@/components/TodayHero';
 import PendingBanner from '@/components/PendingBanner';
 import ReturnFromGapBanner from '@/components/ReturnFromGapBanner';
 import ReturnFromGapHero from '@/components/ReturnFromGapHero';
+import PhaseTransitionBanner from '@/components/PhaseTransitionBanner';
+import PhaseTransitionHero from '@/components/PhaseTransitionHero';
 import WeeklyStrip from '@/components/WeeklyStrip';
 import LastSessionCard from '@/components/LastSessionCard';
+import ActiveWindowChip from '@/components/ActiveWindowChip';
 import { summarizeWeek } from '@/lib/weekSummary';
 import { buildWhy } from '@/lib/whyThisSession';
 import { summarizeReturnFromGapProposal } from '@/lib/returnFromGap';
+import { summarizePhaseTransitionProposal } from '@/lib/phaseTransition';
 import { reconcile } from '@/lib/reconcile';
 import { format, startOfWeek, endOfWeek, subDays, parseISO } from 'date-fns';
 
@@ -50,6 +54,7 @@ export default async function Today() {
     { data: yesterdayPlan },
     { data: historyActivities },
     { data: recentProposals },
+    { data: activeWindows },
   ] = await Promise.all([
     sb.from('plans').select('id,date,type,day_code,status,prescription,created_at')
       .eq('user_id', user.id).eq('date', today).order('id').limit(1).maybeSingle(),
@@ -71,7 +76,30 @@ export default async function Today() {
       .order('date', { ascending: false }).limit(200),
     sb.from('ai_proposals').select('id,status,applied_at,created_at,source_activity_id,rationale,diff')
       .eq('user_id', user.id).order('created_at', { ascending: false }).limit(40),
+    // Active availability windows intersecting the visible week. We
+    // fetch the whole week (not just today) so the strip can overlay
+    // kind badges on upcoming covered days too. The today-chip filters
+    // down to the one covering today.
+    sb.from('availability_windows')
+      .select('id, starts_on, ends_on, kind, strategy')
+      .eq('user_id', user.id)
+      .eq('status', 'active')
+      .lte('starts_on', weekEndIso)
+      .gte('ends_on', weekStartIso)
+      .order('ends_on', { ascending: true }),
   ]);
+
+  const weekWindows = (activeWindows ?? []) as Array<{
+    starts_on: string;
+    ends_on: string;
+    kind: 'travel' | 'injury' | 'pause';
+    strategy: 'auto' | 'bodyweight' | 'rest' | 'suppress';
+  }>;
+  // Window covering "today" (soonest-to-end first so we pick the most
+  // imminently-ending one if the overlap invariant ever slipped).
+  const activeWindow = weekWindows.find(
+    (w) => w.starts_on <= today && w.ends_on >= today
+  ) ?? null;
 
   // Already completed today for this plan?
   let alreadyDone = false;
@@ -87,6 +115,7 @@ export default async function Today() {
     plans: weekPlans ?? [],
     activities: weekActivities ?? [],
     phase: activePhase ?? null,
+    windows: weekWindows,
   });
 
   // Why this session — deterministic
@@ -114,9 +143,20 @@ export default async function Today() {
     lastActivity = recentDone ?? null;
   }
 
-  // Split pending proposals: the top return_from_gap (if any) is
-  // handled by the dedicated banner/hero; everything else falls through
-  // to the regular PendingBanner.
+  // Split pending proposals by kind. Dedicated UI for:
+  //   - return_from_gap (banner or hero — welcome-back flow)
+  //   - phase_transition (banner or hero — phase handoff flow)
+  // Everything else falls through to the generic PendingBanner.
+  //
+  // Priority rule when both rfg AND pt are pending:
+  //   - rfg ALWAYS wins the hero slot. The user is re-landing; the
+  //     phase handoff is the next conversation, not this one.
+  //   - If rfg takes hero, we still render pt as a banner above when pt
+  //     is soft-tier (it's a gentle nudge, stacks cleanly).
+  //   - If rfg takes hero AND pt is hard-tier, we suppress pt for this
+  //     render. Accepting rfg fires reconcile → the next page load gets
+  //     a fresh pt eval against the post-rfg plan state.
+  //   - If rfg takes banner, pt can use hero if it's hard-tier.
   const pendingList = (pending ?? []) as Array<{
     id: string;
     rationale: string | null;
@@ -133,7 +173,22 @@ export default async function Today() {
         diff: topRfgRaw.diff,
       })
     : null;
-  const otherPending = pendingList.filter((p) => p.kind !== 'return_from_gap');
+  const topPtRaw = pendingList.find((p) => p.kind === 'phase_transition') ?? null;
+  const ptViewRaw = topPtRaw
+    ? summarizePhaseTransitionProposal({
+        id: topPtRaw.id,
+        rationale: topPtRaw.rationale,
+        diff: topPtRaw.diff,
+      })
+    : null;
+  // Apply hero-conflict suppression: rfg hero outranks a pt hero.
+  const ptView =
+    ptViewRaw && ptViewRaw.view === 'hero' && rfgView?.view === 'hero'
+      ? null
+      : ptViewRaw;
+  const otherPending = pendingList.filter(
+    (p) => p.kind !== 'return_from_gap' && p.kind !== 'phase_transition'
+  );
 
   // Proposal tied to the last activity (verdict chip)
   let lastProposal: any = null;
@@ -163,14 +218,29 @@ export default async function Today() {
 
       <WeeklyStrip summary={weekSummary} />
 
+      {activeWindow && (
+        <ActiveWindowChip
+          kind={activeWindow.kind as any}
+          strategy={activeWindow.strategy as any}
+          startsOn={activeWindow.starts_on}
+          endsOn={activeWindow.ends_on}
+          todayIso={today}
+        />
+      )}
+
       {rfgView?.view === 'banner' && (
         <ReturnFromGapBanner proposal={rfgView.props} />
+      )}
+      {ptView?.view === 'banner' && (
+        <PhaseTransitionBanner proposal={ptView.props} />
       )}
 
       <PendingBanner pending={otherPending} />
 
       {rfgView?.view === 'hero' ? (
         <ReturnFromGapHero proposal={rfgView.props} />
+      ) : ptView?.view === 'hero' ? (
+        <PhaseTransitionHero proposal={ptView.props} />
       ) : (
         <>
           <LastSessionCard

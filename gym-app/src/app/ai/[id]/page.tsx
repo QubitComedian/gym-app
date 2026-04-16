@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
 import { supabaseServer } from '@/lib/supabase/server';
 import ProposalView from './ProposalView';
+import TemplateChangeView from './TemplateChangeView';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,9 +14,37 @@ export default async function ProposalPage({ params }: { params: { id: string } 
   const { data: prop } = await sb.from('ai_proposals').select('*').eq('user_id', user.id).eq('id', params.id).maybeSingle();
   if (!prop) notFound();
 
+  // Template edits have a fundamentally different diff shape (before/after
+  // patterns + structured updates[]/creates[]/deletes[] objects, not id
+  // lists). Render them through a dedicated view rather than forcing them
+  // into the adjust-proposal renderer.
+  if (prop.kind === 'template_change') {
+    return (
+      <main className="max-w-xl mx-auto px-4 pt-5 pb-28">
+        <Link href="/today" className="text-tiny text-muted">← Today</Link>
+        <TemplateChangeView
+          proposal={{
+            id: prop.id,
+            status: prop.status,
+            triggered_by: prop.triggered_by,
+            created_at: prop.created_at,
+            applied_at: prop.applied_at ?? null,
+            rationale: prop.rationale,
+            diff: prop.diff ?? {},
+          }}
+        />
+      </main>
+    );
+  }
+
   // Hydrate "before" on updates + the target of deletes so DiffCards are useful
   const updateIds = (prop.diff?.updates ?? []).map((u: any) => u.plan_id).filter(Boolean);
-  const deleteIds = prop.diff?.deletes ?? [];
+  const deleteIdsRaw = prop.diff?.deletes ?? [];
+  // Adjust proposals store deletes as string[] (plan ids); newer shapes may
+  // stash objects. Normalize to an id list for the hydration query.
+  const deleteIds = (Array.isArray(deleteIdsRaw) ? deleteIdsRaw : [])
+    .map((d: unknown) => (typeof d === 'string' ? d : (d as { plan_id?: string })?.plan_id))
+    .filter((x: unknown): x is string => typeof x === 'string');
   const wantedIds = Array.from(new Set([...updateIds, ...deleteIds]));
 
   const { data: existingPlans } = wantedIds.length
@@ -27,7 +56,7 @@ export default async function ProposalPage({ params }: { params: { id: string } 
     ...u,
     before: planById.get(u.plan_id) ?? null,
   }));
-  const hydratedDeletes = (prop.diff?.deletes ?? []).map((id: string) => planById.get(id)).filter(Boolean);
+  const hydratedDeletes = deleteIds.map((id) => planById.get(id)).filter(Boolean);
 
   return (
     <main className="max-w-xl mx-auto px-4 pt-5 pb-28">

@@ -11,6 +11,8 @@
  *   4. ageOut  → UPDATE past plans without activities → status='missed'
  *   5. rollForward → INSERT plans extending the 21-day window
  *   6. dropOff → create 'return_from_gap' proposal when gap ≥ 3d
+ *   7. phaseTransition → create 'phase_transition' proposal when the
+ *      active phase is ending within 7 days or already overdue
  *
  * Pure on its own inputs other than the Supabase client. Safe to call
  * from server components, API routes, and cron handlers.
@@ -24,6 +26,7 @@ import { checkFreshness } from './freshness';
 import { ageOut } from './ageOut';
 import { rollForward } from './rollForward';
 import { detectDropOff } from './dropOff';
+import { detectPhaseTransition } from '@/lib/phase/transition';
 import type { ReconcileCause, ReconcileResult } from './types';
 import { ZERO_RESULT } from './types';
 
@@ -88,11 +91,13 @@ export async function reconcile(
   const a = await ageOut({ sb, userId, todayIso });
   const r = await rollForward({ sb, userId, todayIso });
   const d = await detectDropOff({ sb, userId, todayIso });
+  const pt = await detectPhaseTransition({ sb, userId, todayIso });
 
   return {
     aged_out: a.aged_out,
     rolled_forward: r.rolled_forward,
     drop_off_detected: d.drop_off_detected,
+    phase_transition_detected: pt.phase_transition_detected,
     duration_ms: Date.now() - startedAt,
     skipped: false,
   };

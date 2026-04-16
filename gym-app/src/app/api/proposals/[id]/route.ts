@@ -1,7 +1,7 @@
 /**
  * Proposal apply / reject handler.
  *
- * Accepts two shapes of proposal, keyed on `ai_proposals.kind`:
+ * Accepts three shapes of proposal, keyed on `ai_proposals.kind`:
  *
  *   - kind='adjust'          (original flow, the default)
  *       POST body: { action: 'apply' | 'reject' | 'dismiss' }
@@ -16,6 +16,22 @@
  *       applied so the banner dismisses. Options with action='reassess'
  *       short-circuit the diff apply and return a redirect to /check-in.
  *
+ *   - kind='phase_transition' (P1.2 / PR-J)
+ *       POST body: { action: 'accept_option', option_id: string }
+ *                 | { action: 'reject' | 'dismiss' }
+ *       'accept_option' applies `diff.options[i].phase_updates` +
+ *       `diff.options[i].plan_diff` atomically. Options with
+ *       action='reassess' redirect to /check-in without touching data.
+ *
+ *   - kind='availability_change' (P1.3 / PR-O)
+ *       These are APPLIED-AT-CREATION audit rows, so 'apply' is a no-op.
+ *       The only interactive action is 'rollback' — reverses the original
+ *       change (create→cancel, cancel→create, modify→swap before/after)
+ *       via `applyRollbackAvailability`. The original row flips to
+ *       status='rolled_back'; a new availability_change audit row is
+ *       inserted with intent='rollback' and `diff.rollback_of` chaining
+ *       back to the original.
+ *
  * Side effects after a successful apply:
  *   - When a return_from_gap is accepted, any still-pending 'adjust'
  *     proposal created before the gap's last_done_date is auto-rejected
@@ -28,6 +44,10 @@
 import { NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabase/server';
 import { reconcile } from '@/lib/reconcile';
+import { applyPhaseTransition } from '@/lib/phase/apply';
+import type { PhaseTransitionProposal } from '@/lib/phase/transition.pure';
+import { applyRollbackAvailability } from '@/lib/availability/apply';
+import { enqueuePlanSync } from '@/lib/plans/write';
 
 type Diff = {
   updates?: Array<{
@@ -58,7 +78,7 @@ type Diff = {
 };
 
 type Body = {
-  action?: 'apply' | 'accept_option' | 'reject' | 'dismiss';
+  action?: 'apply' | 'accept_option' | 'reject' | 'dismiss' | 'rollback';
   option_id?: string;
 };
 
@@ -77,7 +97,31 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     .eq('id', params.id)
     .maybeSingle();
   if (!prop) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  if (prop.status !== 'pending') {
+
+  const kind: string = prop.kind ?? 'adjust';
+
+  // Status gate.
+  //
+  // Non-availability kinds are pending-only — 'apply', 'reject',
+  // 'accept_option' all require the row to be in 'pending'.
+  //
+  // 'availability_change' rows go straight to 'applied' at creation,
+  // so the only valid transition is 'rollback' (status='applied' →
+  // 'rolled_back'). 'reject'/'dismiss' on an already-applied
+  // availability row is meaningless and shouldn't dismiss a history
+  // entry the user already committed to.
+  if (kind === 'availability_change') {
+    if (action !== 'rollback') {
+      return NextResponse.json(
+        {
+          error:
+            'availability_change proposals accept only action=rollback (applied-at-creation)',
+        },
+        { status: 400 }
+      );
+    }
+    // The rollback handler below rechecks the precise status it needs.
+  } else if (prop.status !== 'pending') {
     return NextResponse.json({ error: 'already ' + prop.status }, { status: 400 });
   }
 
@@ -88,16 +132,113 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 
   const diff: Diff = (prop.diff as Diff) || {};
-  const kind: string = prop.kind ?? 'adjust';
 
-  // -------- return_from_gap: option-based apply -------------------------
+  // -------- rollback (availability_change only) -------------------------
+  // Availability changes are applied-at-creation, so the audit row is
+  // status='applied' immediately on insert. 'rollback' is the only
+  // interactive state transition for these rows — it inverts the
+  // original change. Allowed only while status='applied'; rolled-back
+  // entries return 400 so the UI can refresh and hide the button.
+  if (action === 'rollback') {
+    if (kind !== 'availability_change') {
+      return NextResponse.json(
+        { error: 'rollback only valid for availability_change' },
+        { status: 400 }
+      );
+    }
+    // Availability rows are applied-at-creation, so status='applied' is
+    // the only valid starting point. 'rolled_back', 'rejected', etc.
+    // should fail loudly rather than chain indefinitely.
+    if (prop.status !== 'applied') {
+      return NextResponse.json(
+        { error: `cannot rollback proposal with status=${prop.status}` },
+        { status: 400 }
+      );
+    }
+
+    const result = await applyRollbackAvailability({
+      sb,
+      userId: user.id,
+      proposalId: prop.id,
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'window_not_found' ? 404
+        : result.reason === 'rollback_already_rolled_back' ? 400
+        : result.reason === 'rollback_target_not_availability' ? 400
+        : result.reason === 'overlaps_existing' ? 409
+        : result.reason === 'invalid_input' ? 400
+        : 500;
+      return NextResponse.json(result, { status });
+    }
+
+    // The rollback's own fire-and-forget reconcile already fired inside
+    // applyRollback*. Don't double-fire.
+    return NextResponse.json(result);
+  }
+
+  // -------- option-based apply (return_from_gap, phase_transition) ------
   if (action === 'accept_option') {
-    if (kind !== 'return_from_gap') {
-      return NextResponse.json({ error: 'accept_option only valid for return_from_gap' }, { status: 400 });
+    if (kind !== 'return_from_gap' && kind !== 'phase_transition') {
+      return NextResponse.json(
+        { error: 'accept_option only valid for return_from_gap or phase_transition' },
+        { status: 400 }
+      );
     }
     if (!body.option_id) {
       return NextResponse.json({ error: 'option_id required' }, { status: 400 });
     }
+
+    // ---- phase_transition: delegate to applyPhaseTransition ------------
+    if (kind === 'phase_transition') {
+      const proposal = prop.diff as PhaseTransitionProposal;
+      const result = await applyPhaseTransition({
+        sb,
+        userId: user.id,
+        proposal,
+        optionId: body.option_id,
+      });
+
+      if (!result.ok) {
+        const status = result.reason === 'unknown_option' ? 400 : 500;
+        return NextResponse.json(
+          { error: result.reason, detail: result.detail },
+          { status }
+        );
+      }
+
+      // Reassess: mark applied, redirect to /check-in, no plan changes.
+      if (result.redirect === '/check-in') {
+        await sb
+          .from('ai_proposals')
+          .update({
+            status: 'applied',
+            applied_at: new Date().toISOString(),
+            rationale: appendNote(prop.rationale, `User chose: reassess`),
+          })
+          .eq('id', prop.id);
+        fireAndForgetReconcile(user.id);
+        return NextResponse.json({ ok: true, redirect: '/check-in' });
+      }
+
+      await sb
+        .from('ai_proposals')
+        .update({
+          status: 'applied',
+          applied_at: new Date().toISOString(),
+          rationale: appendNote(prop.rationale, `User chose: ${result.option_id}`),
+        })
+        .eq('id', prop.id);
+
+      fireAndForgetReconcile(user.id);
+      return NextResponse.json({
+        ok: true,
+        applied: result.applied,
+        skipped: result.skipped,
+      });
+    }
+
+    // ---- return_from_gap: inline diff apply ----------------------------
     const option = (diff.options ?? []).find((o) => o.id === body.option_id);
     if (!option) {
       return NextResponse.json({ error: `unknown option_id ${body.option_id}` }, { status: 400 });
@@ -138,9 +279,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (action !== 'apply') {
     return NextResponse.json({ error: 'bad action' }, { status: 400 });
   }
-  if (kind === 'return_from_gap') {
+  if (kind === 'return_from_gap' || kind === 'phase_transition') {
     return NextResponse.json(
-      { error: 'return_from_gap requires action=accept_option + option_id' },
+      { error: `${kind} requires action=accept_option + option_id` },
       { status: 400 }
     );
   }
@@ -173,6 +314,10 @@ async function applyDiff(
   const d = diff;
   const rationale = d.rationale ?? fallbackRationale ?? null;
 
+  // Plan ids we'll queue for Google Calendar sync once all writes commit.
+  // Populated with successfully-updated and newly-inserted rows only.
+  const upsertedPlanIds: string[] = [];
+
   // Apply updates: load existing plan, snapshot version, write new prescription.
   for (const u of d.updates ?? []) {
     if (!u.plan_id) continue;
@@ -191,28 +336,51 @@ async function applyDiff(
     patch.version = ((existing.version as number | null) ?? 1) + 1;
     patch.source = 'ai_proposed';
     patch.ai_rationale = rationale;
-    await sb.from('plans').update(patch).eq('id', u.plan_id);
+    const { error: updErr } = await sb.from('plans').update(patch).eq('id', u.plan_id);
+    if (!updErr) upsertedPlanIds.push(u.plan_id);
   }
 
-  // Apply creates.
+  // Apply creates. `.select('id')` captures inserted ids for the sync
+  // hook below.
   if (d.creates?.length) {
-    await sb.from('plans').insert(
-      d.creates.map((c) => ({
-        user_id: userId,
-        date: c.date,
-        type: c.type,
-        day_code: c.day_code ?? null,
-        prescription: c.prescription ?? {},
-        status: 'planned',
-        source: 'ai_proposed',
-        ai_rationale: rationale,
-      }))
-    );
+    const { data: insertedRows } = await sb
+      .from('plans')
+      .insert(
+        d.creates.map((c) => ({
+          user_id: userId,
+          date: c.date,
+          type: c.type,
+          day_code: c.day_code ?? null,
+          prescription: c.prescription ?? {},
+          status: 'planned',
+          source: 'ai_proposed',
+          ai_rationale: rationale,
+        }))
+      )
+      .select('id');
+    for (const r of (insertedRows ?? []) as Array<{ id: string }>) {
+      upsertedPlanIds.push(r.id);
+    }
+  }
+
+  // Pre-snapshot delete links for calendar sync BEFORE the delete runs.
+  // Post-delete, `calendar_links.plan_id` is SET NULL (migration 0008)
+  // and lookup by plan_id would return nothing. enqueuePlanSync no-ops
+  // on plans that were never synced.
+  const deleteIds = (d.deletes ?? []).filter(Boolean);
+  if (deleteIds.length > 0) {
+    await enqueuePlanSync(sb, userId, { deleteIds });
   }
 
   // Apply deletes (soft — only planned rows).
-  for (const id of d.deletes ?? []) {
+  for (const id of deleteIds) {
     await sb.from('plans').delete().eq('id', id).eq('user_id', userId).eq('status', 'planned');
+  }
+
+  // Enqueue upsert sync jobs AFTER all writes commit. No-op when the
+  // user has not connected Google Calendar.
+  if (upsertedPlanIds.length > 0) {
+    await enqueuePlanSync(sb, userId, { upsertIds: upsertedPlanIds });
   }
 }
 
