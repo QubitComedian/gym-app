@@ -10,6 +10,8 @@ import YogaLog, { yogaDefaults, type YogaPayload } from './forms/YogaLog';
 import ClimbLog, { climbDefaults, type ClimbPayload } from './forms/ClimbLog';
 import MobilityLog, { mobilityDefaults, type MobilityPayload } from './forms/MobilityLog';
 import SaunaColdLog, { saunaColdDefaults, type SaunaColdPayload } from './forms/SaunaColdLog';
+import { DictationButton } from '@/components/ui/Dictation';
+import { appendTranscript } from '@/components/ui/DictationInput';
 
 /* ────────────────────────── Types ────────────────────────── */
 
@@ -686,12 +688,21 @@ export default function LogClient({
             </button>
           ))}
         </div>
-        <textarea
-          placeholder="Notes (energy, soreness, what went well, what to change)"
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          className="w-full mt-3 bg-panel-2 border border-border rounded px-2 py-2 text-sm min-h-[60px]"
-        />
+        <div className="relative mt-3">
+          <textarea
+            placeholder="Notes (energy, soreness, what went well, what to change)"
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            className="w-full bg-panel-2 border border-border rounded px-2 py-2 text-sm min-h-[60px] pr-10"
+          />
+          <div className="absolute bottom-2 right-2">
+            <DictationButton
+              size="sm"
+              compact
+              onTranscript={(t: string) => setNotes((prev) => appendTranscript(prev, t))}
+            />
+          </div>
+        </div>
       </section>
 
       {err && <p className="text-tiny text-danger mt-3">{err}</p>}

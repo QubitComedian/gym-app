@@ -2,6 +2,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { DictationButton } from '@/components/ui/Dictation';
+import { appendTranscript } from '@/components/ui/DictationInput';
 
 const TYPES = ['gym', 'run', 'bike', 'swim', 'yoga', 'climb', 'sauna_cold', 'mobility', 'rest', 'other'] as const;
 
@@ -73,7 +75,20 @@ export default function AddClient({ defaultDate }: { defaultDate: string }) {
         )}
         <label className="block">
           <span className="text-[11px] text-muted">Notes</span>
-          <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full mt-0.5 bg-panel-2 border border-border rounded px-2 py-2 min-h-[80px]" />
+          <div className="relative mt-0.5">
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              className="w-full bg-panel-2 border border-border rounded px-2 py-2 min-h-[80px] pr-10"
+            />
+            <div className="absolute bottom-2 right-2">
+              <DictationButton
+                size="sm"
+                compact
+                onTranscript={(t: string) => setNotes((prev) => appendTranscript(prev, t))}
+              />
+            </div>
+          </div>
         </label>
       </div>
 

@@ -3,6 +3,8 @@ import { redirect, notFound } from 'next/navigation';
 import { supabaseServer } from '@/lib/supabase/server';
 import ProposalView from './ProposalView';
 import TemplateChangeView from './TemplateChangeView';
+import ConflictView from '@/components/ConflictView';
+import { summarizeConflictDetail } from '@/lib/conflictProposal';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +37,25 @@ export default async function ProposalPage({ params }: { params: { id: string } 
         />
       </main>
     );
+  }
+
+  // Conflict proposals: dedicated option-based view.
+  if (prop.kind === 'conflict' || prop.kind === 'meeting_conflict') {
+    const detail = summarizeConflictDetail({
+      id: prop.id,
+      kind: prop.kind,
+      rationale: prop.rationale,
+      diff: prop.diff,
+    });
+    if (detail) {
+      detail.status = prop.status;
+      return (
+        <main className="max-w-xl mx-auto px-4 pt-5 pb-28">
+          <Link href="/today" className="text-tiny text-muted">← Today</Link>
+          <ConflictView proposal={detail} />
+        </main>
+      );
+    }
   }
 
   // Hydrate "before" on updates + the target of deletes so DiffCards are useful

@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import { useToast } from '@/components/ui/Toast';
 import WindowGlyph from '@/components/ui/WindowGlyph';
+import WeightTracker from '@/components/WeightTracker';
+import IntegrationCards from '@/components/IntegrationCards';
 import {
   KIND_META,
   formatRange,
@@ -82,6 +84,8 @@ export default function YouClient({
       </header>
 
       <PhaseSection activePhase={activePhase} phases={phases} />
+      <WeightTracker phaseIntent={inferPhaseIntent(activePhase)} />
+      <IntegrationCards />
       <WeeklyTemplateSection activePhase={activePhase} weeklyPatterns={weeklyPatterns} />
       <AvailabilitySection availability={availability} />
       <ExercisesSection exercises={exercises} />
@@ -89,6 +93,25 @@ export default function YouClient({
       <AccountSection />
     </main>
   );
+}
+
+/**
+ * Infer whether the active phase is a cut / bulk / maintain, used by
+ * WeightTracker to color the weekly delta chip. Phase codes follow the
+ * pattern "C1" (cut), "B2" (bulk/build), "M1" (maintain); we fall back
+ * to scanning the name for keywords for safety.
+ */
+function inferPhaseIntent(phase: Phase | null): 'cut' | 'bulk' | 'maintain' | null {
+  if (!phase) return null;
+  const code = (phase.code || '').toUpperCase();
+  if (code.startsWith('C')) return 'cut';
+  if (code.startsWith('B')) return 'bulk';
+  if (code.startsWith('M')) return 'maintain';
+  const name = (phase.name || '').toLowerCase();
+  if (/cut|lean|deficit/.test(name))     return 'cut';
+  if (/bulk|build|surplus|gain/.test(name)) return 'bulk';
+  if (/maintain|peak|base/.test(name))   return 'maintain';
+  return null;
 }
 
 function Avatar({ email }: { email: string }) {
@@ -465,24 +488,30 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
 /* ───────────────────── Google Calendar ───────────────────── */
 
 function GoogleSection({ google }: { google: { connected: boolean; expiresAt: string | null; eventCount: number; linkCount: number } }) {
-  const [pullDays, setPullDays] = useState(90);
   const [pushDays, setPushDays] = useState(14);
-  const [calendarId, setCalendarId] = useState('primary');
   const [busy, setBusy] = useState<string | null>(null);
   const { push } = useToast();
 
-  async function call(path: string, body: any, label: string) {
-    setBusy(label);
+  async function pushSessions() {
+    setBusy('push');
     try {
-      const res = await fetch(path, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+      const res = await fetch('/api/calendar/push', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          calendar_id: 'primary',
+          horizon_days: pushDays,
+          time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'failed');
-      push({ kind: 'success', title: `${label} complete`, description: j.upserted ? `${j.upserted} events` : undefined });
-    } catch (e: any) { push({ kind: 'info', title: `${label} failed`, description: e.message }); }
-    finally { setBusy(null); }
+      push({ kind: 'success', title: 'Sync complete', description: j.upserted ? `${j.upserted} events pushed` : 'Calendar is up to date' });
+    } catch (e: any) {
+      push({ kind: 'info', title: 'Sync failed', description: e.message });
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -496,54 +525,32 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
             : 'Not connected'}
         </div>
       </div>
-      <div className="text-tiny text-muted">{google.eventCount} events imported · {google.linkCount} plans pushed</div>
+      {google.connected && (
+        <div className="text-tiny text-muted">{google.linkCount} session{google.linkCount === 1 ? '' : 's'} synced to calendar</div>
+      )}
 
       {!google.connected && (
         <p className="text-tiny text-muted-2 mt-3">Sign out and back in to grant calendar access.</p>
       )}
 
       {google.connected && (
-        <>
-          <div className="mt-4 space-y-3">
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-small font-medium flex-1 min-w-0 truncate">Pull events</span>
-                <input type="number" min={7} max={365} value={pullDays} onChange={e => setPullDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
-                <span className="text-tiny text-muted shrink-0">days</span>
-              </div>
-              <button
-                disabled={!!busy}
-                onClick={() => call('/api/calendar/sync', { calendar_id: calendarId, days: pullDays }, 'Pull')}
-                className="w-full bg-panel-2 border border-border rounded-lg py-2 text-small disabled:opacity-50"
-              >
-                {busy === 'Pull' ? 'Pulling…' : 'Pull from Google Calendar'}
-              </button>
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-small font-medium flex-1 min-w-0 truncate">Push planned sessions</span>
-                <input type="number" min={1} max={60} value={pushDays} onChange={e => setPushDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
-                <span className="text-tiny text-muted shrink-0">days</span>
-              </div>
-              <button
-                disabled={!!busy}
-                onClick={() => call('/api/calendar/push', { calendar_id: calendarId, horizon_days: pushDays, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone }, 'Push')}
-                className="w-full bg-panel-2 border border-border rounded-lg py-2 text-small disabled:opacity-50"
-              >
-                {busy === 'Push' ? 'Pushing…' : 'Push planned sessions'}
-              </button>
-            </div>
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-small font-medium flex-1 min-w-0 truncate">Push planned sessions</span>
+            <input type="number" min={1} max={60} value={pushDays} onChange={e => setPushDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
+            <span className="text-tiny text-muted shrink-0">days</span>
           </div>
-
-          <details className="mt-4">
-            <summary className="text-tiny text-muted cursor-pointer">Advanced</summary>
-            <label className="block mt-2">
-              <span className="text-tiny text-muted">Calendar ID (leave as primary unless gym events are in a different calendar)</span>
-              <input value={calendarId} onChange={e => setCalendarId(e.target.value)} className="w-full mt-1 bg-panel-2 border border-border rounded px-2 py-1.5 text-small" />
-            </label>
-          </details>
-        </>
+          <button
+            disabled={!!busy}
+            onClick={pushSessions}
+            className="w-full bg-panel-2 border border-border rounded-lg py-2 text-small disabled:opacity-50"
+          >
+            {busy === 'push' ? 'Syncing…' : 'Sync to Google Calendar'}
+          </button>
+          <p className="text-tiny text-muted-2 mt-2">
+            Conflicts detected by the nightly scan will appear as proposals on your Today page.
+          </p>
+        </div>
       )}
     </section>
   );

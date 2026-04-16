@@ -8,13 +8,16 @@ import ReturnFromGapBanner from '@/components/ReturnFromGapBanner';
 import ReturnFromGapHero from '@/components/ReturnFromGapHero';
 import PhaseTransitionBanner from '@/components/PhaseTransitionBanner';
 import PhaseTransitionHero from '@/components/PhaseTransitionHero';
+import ConflictBanner from '@/components/ConflictBanner';
 import WeeklyStrip from '@/components/WeeklyStrip';
 import LastSessionCard from '@/components/LastSessionCard';
 import ActiveWindowChip from '@/components/ActiveWindowChip';
+import CoachChat from '@/components/CoachChat';
 import { summarizeWeek } from '@/lib/weekSummary';
 import { buildWhy } from '@/lib/whyThisSession';
 import { summarizeReturnFromGapProposal } from '@/lib/returnFromGap';
 import { summarizePhaseTransitionProposal } from '@/lib/phaseTransition';
+import { summarizeConflictProposal } from '@/lib/conflictProposal';
 import { reconcile } from '@/lib/reconcile';
 import { format, startOfWeek, endOfWeek, subDays, parseISO } from 'date-fns';
 
@@ -186,8 +189,16 @@ export default async function Today() {
     ptViewRaw && ptViewRaw.view === 'hero' && rfgView?.view === 'hero'
       ? null
       : ptViewRaw;
+  // Conflict proposals — dedicated banner with option-based resolution.
+  const conflictPending = pendingList
+    .filter((p) => p.kind === 'conflict' || p.kind === 'meeting_conflict')
+    .map((p) => summarizeConflictProposal({ id: p.id, kind: p.kind, rationale: p.rationale, diff: p.diff }))
+    .filter((v): v is NonNullable<typeof v> => v !== null)
+    .map((v) => v.props);
+
   const otherPending = pendingList.filter(
     (p) => p.kind !== 'return_from_gap' && p.kind !== 'phase_transition'
+      && p.kind !== 'conflict' && p.kind !== 'meeting_conflict'
   );
 
   // Proposal tied to the last activity (verdict chip)
@@ -218,6 +229,9 @@ export default async function Today() {
 
       <WeeklyStrip summary={weekSummary} />
 
+      {/* Free-form chat with the AI coach — adapt plan for travel, sickness, time crunch, etc. */}
+      <CoachChat />
+
       {activeWindow && (
         <ActiveWindowChip
           kind={activeWindow.kind as any}
@@ -234,6 +248,8 @@ export default async function Today() {
       {ptView?.view === 'banner' && (
         <PhaseTransitionBanner proposal={ptView.props} />
       )}
+
+      <ConflictBanner proposals={conflictPending} />
 
       <PendingBanner pending={otherPending} />
 

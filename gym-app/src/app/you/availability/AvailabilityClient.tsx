@@ -43,6 +43,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useToast } from '@/components/ui/Toast';
 import WindowGlyph from '@/components/ui/WindowGlyph';
+import { DictationButton } from '@/components/ui/Dictation';
+import { appendTranscript } from '@/components/ui/DictationInput';
 import {
   KIND_META,
   STRATEGY_META,
@@ -739,13 +741,22 @@ function FormDialog({
         helper="Shows up on plan cards during the window. Keep it short."
         optional
       >
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value.slice(0, 500))}
-          rows={2}
-          placeholder={kind === 'travel' ? 'e.g. Lisbon, hotel only' : kind === 'injury' ? 'e.g. left knee, easing back' : 'e.g. work crunch'}
-          className="w-full bg-panel-2 border border-border rounded-lg px-3 py-2 text-small resize-none"
-        />
+        <div className="relative">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value.slice(0, 500))}
+            rows={2}
+            placeholder={kind === 'travel' ? 'e.g. Lisbon, hotel only' : kind === 'injury' ? 'e.g. left knee, easing back' : 'e.g. work crunch'}
+            className="w-full bg-panel-2 border border-border rounded-lg px-3 py-2 pr-10 text-small resize-none"
+          />
+          <div className="absolute bottom-2 right-2">
+            <DictationButton
+              size="sm"
+              compact
+              onTranscript={(t: string) => setNote((prev) => appendTranscript(prev, t).slice(0, 500))}
+            />
+          </div>
+        </div>
         <div className="text-tiny text-muted text-right mt-1">{note.length}/500</div>
       </FieldGroup>
 

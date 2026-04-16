@@ -1,7 +1,7 @@
 /**
  * Proposal apply / reject handler.
  *
- * Accepts three shapes of proposal, keyed on `ai_proposals.kind`:
+ * Accepts proposal shapes keyed on `ai_proposals.kind`:
  *
  *   - kind='adjust'          (original flow, the default)
  *       POST body: { action: 'apply' | 'reject' | 'dismiss' }
@@ -26,17 +26,29 @@
  *   - kind='availability_change' (P1.3 / PR-O)
  *       These are APPLIED-AT-CREATION audit rows, so 'apply' is a no-op.
  *       The only interactive action is 'rollback' — reverses the original
- *       change (create→cancel, cancel→create, modify→swap before/after)
- *       via `applyRollbackAvailability`. The original row flips to
- *       status='rolled_back'; a new availability_change audit row is
- *       inserted with intent='rollback' and `diff.rollback_of` chaining
- *       back to the original.
+ *       change (create->cancel, cancel->create, modify->swap before/after)
+ *       via `applyRollbackAvailability`.
+ *
+ *   - kind='conflict' (P1.5 / PR-Y)
+ *       POST body: { action: 'accept_option', option_id: string }
+ *                 | { action: 'reject' | 'dismiss' }
+ *       Etag conflict from the sync worker. Options: force_push (re-push
+ *       app projection), accept_remote (accept Google's change),
+ *       cancel_plan (skip session), recreate (re-create deleted event),
+ *       dismiss (force-push and stop flagging).
+ *
+ *   - kind='meeting_conflict' (P1.5 / PR-Y)
+ *       POST body: { action: 'accept_option', option_id: string }
+ *                 | { action: 'reject' | 'dismiss' }
+ *       Meeting overlap from the nightly full-scan. Options:
+ *       shift_morning, shift_evening (set plan time_override),
+ *       move_day (move to adjacent day), skip (mark skipped),
+ *       dismiss (keep as planned).
  *
  * Side effects after a successful apply:
  *   - When a return_from_gap is accepted, any still-pending 'adjust'
  *     proposal created before the gap's last_done_date is auto-rejected
- *     as stale — those suggestions were about sessions the user has now
- *     stopped caring about. Comment on the superseded rationale for ops.
+ *     as stale.
  *   - Reconcile is kicked fire-and-forget so age-out / roll-forward
  *     settle into the post-apply state before the next page load.
  */
@@ -48,6 +60,12 @@ import { applyPhaseTransition } from '@/lib/phase/apply';
 import type { PhaseTransitionProposal } from '@/lib/phase/transition.pure';
 import { applyRollbackAvailability } from '@/lib/availability/apply';
 import { enqueuePlanSync } from '@/lib/plans/write';
+import {
+  applyConflictOption,
+  applyMeetingConflictOption,
+  type ConflictDiff,
+  type MeetingConflictDiff,
+} from '@/lib/google/conflict.apply';
 
 type Diff = {
   updates?: Array<{
@@ -177,16 +195,69 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     return NextResponse.json(result);
   }
 
-  // -------- option-based apply (return_from_gap, phase_transition) ------
+  // -------- option-based apply (rfg, pt, conflict, meeting_conflict) ----
   if (action === 'accept_option') {
-    if (kind !== 'return_from_gap' && kind !== 'phase_transition') {
+    const optionKinds = ['return_from_gap', 'phase_transition', 'conflict', 'meeting_conflict'];
+    if (!optionKinds.includes(kind)) {
       return NextResponse.json(
-        { error: 'accept_option only valid for return_from_gap or phase_transition' },
+        { error: `accept_option not valid for kind=${kind}` },
         { status: 400 }
       );
     }
     if (!body.option_id) {
       return NextResponse.json({ error: 'option_id required' }, { status: 400 });
+    }
+
+    // ---- conflict (P1.5): delegate to applyConflictOption ---------------
+    if (kind === 'conflict') {
+      const result = await applyConflictOption(
+        sb,
+        user.id,
+        prop.diff as ConflictDiff,
+        body.option_id,
+      );
+
+      if (!result.ok) {
+        return NextResponse.json({ error: result.reason }, { status: 400 });
+      }
+
+      await sb
+        .from('ai_proposals')
+        .update({
+          status: 'applied',
+          applied_at: new Date().toISOString(),
+          rationale: appendNote(prop.rationale, `User chose: ${body.option_id} (${result.resolution})`),
+        })
+        .eq('id', prop.id);
+
+      fireAndForgetReconcile(user.id);
+      return NextResponse.json({ ok: true, resolution: result.resolution });
+    }
+
+    // ---- meeting_conflict (P1.5): delegate to applyMeetingConflictOption -
+    if (kind === 'meeting_conflict') {
+      const result = await applyMeetingConflictOption(
+        sb,
+        user.id,
+        prop.diff as MeetingConflictDiff,
+        body.option_id,
+      );
+
+      if (!result.ok) {
+        return NextResponse.json({ error: result.reason }, { status: 400 });
+      }
+
+      await sb
+        .from('ai_proposals')
+        .update({
+          status: 'applied',
+          applied_at: new Date().toISOString(),
+          rationale: appendNote(prop.rationale, `User chose: ${body.option_id} (${result.resolution})`),
+        })
+        .eq('id', prop.id);
+
+      fireAndForgetReconcile(user.id);
+      return NextResponse.json({ ok: true, resolution: result.resolution });
     }
 
     // ---- phase_transition: delegate to applyPhaseTransition ------------
@@ -279,7 +350,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (action !== 'apply') {
     return NextResponse.json({ error: 'bad action' }, { status: 400 });
   }
-  if (kind === 'return_from_gap' || kind === 'phase_transition') {
+  if (['return_from_gap', 'phase_transition', 'conflict', 'meeting_conflict'].includes(kind)) {
     return NextResponse.json(
       { error: `${kind} requires action=accept_option + option_id` },
       { status: 400 }

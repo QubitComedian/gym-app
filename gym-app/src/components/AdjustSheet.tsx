@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import BottomSheet from './ui/BottomSheet';
 import { useToast } from './ui/Toast';
+import { DictationButton } from './ui/Dictation';
+import { appendTranscript } from './ui/DictationInput';
 
 type Props =
   | { mode: 'adjust'; planId: string; date: string; label: string }
@@ -101,12 +103,21 @@ export default function AdjustSheet(props: Props) {
         </div>
         <label className="block mb-4">
           <span className="text-tiny text-muted">Optional note</span>
-          <textarea
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            placeholder={props.mode === 'adjust' ? 'e.g. left shoulder feeling tight today' : 'e.g. 45 min window'}
-            className="w-full mt-1 bg-panel-2 border border-border rounded-lg px-3 py-2.5 text-small min-h-[64px]"
-          />
+          <div className="relative mt-1">
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder={props.mode === 'adjust' ? 'e.g. left shoulder feeling tight today' : 'e.g. 45 min window'}
+              className="w-full bg-panel-2 border border-border rounded-lg px-3 py-2.5 text-small min-h-[64px] pr-10"
+            />
+            <div className="absolute bottom-2 right-2">
+              <DictationButton
+                size="sm"
+                compact
+                onTranscript={(t: string) => setNote((prev) => appendTranscript(prev, t))}
+              />
+            </div>
+          </div>
         </label>
         <button
           disabled={!reason || busy}
