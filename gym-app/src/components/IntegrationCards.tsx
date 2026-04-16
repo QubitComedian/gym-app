@@ -1,5 +1,5 @@
 /**
- * IntegrationCards — Strava & Garmin connect/sync/disconnect tiles.
+ * IntegrationCards — Strava connect/sync/disconnect tile.
  *
  * Rendered on /you and on /you/integrations. Fetches /api/integrations/status
  * on mount and after any user action. Never handles tokens client-side.
@@ -20,9 +20,9 @@ type ProviderStatus = {
   activity_count: number;
 };
 
-type StatusResponse = { strava: ProviderStatus; garmin: ProviderStatus };
+type StatusResponse = { strava: ProviderStatus };
 
-type ProviderKey = 'strava' | 'garmin';
+type ProviderKey = 'strava';
 const META: Record<ProviderKey, { name: string; color: string; description: string; connectHref: string; supportsSync: boolean }> = {
   strava: {
     name: 'Strava',
@@ -30,13 +30,6 @@ const META: Record<ProviderKey, { name: string; color: string; description: stri
     description: 'Auto-import runs, rides, and swims. HR and pace flow straight into your history.',
     connectHref: '/api/integrations/strava/connect',
     supportsSync: true,
-  },
-  garmin: {
-    name: 'Garmin',
-    color: 'text-iris',
-    description: 'Connect your Garmin Health account to pull activities and body metrics.',
-    connectHref: '/api/integrations/garmin/connect',
-    supportsSync: false, // wired later — sync pipeline for Garmin TBD
   },
 };
 
@@ -66,7 +59,7 @@ export default function IntegrationCards({ compact = false }: { compact?: boolea
         setBannerTone('error');
       }
     };
-    mk('strava'); mk('garmin');
+    mk('strava');
     load();
   }, []);
 
@@ -94,7 +87,6 @@ export default function IntegrationCards({ compact = false }: { compact?: boolea
 
       <div className="space-y-2">
         <ProviderCard provider="strava" status={status?.strava} loading={loading} onChange={load} />
-        <ProviderCard provider="garmin" status={status?.garmin} loading={loading} onChange={load} />
       </div>
     </section>
   );

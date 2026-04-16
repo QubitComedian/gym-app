@@ -4,7 +4,6 @@
  * Returns a compact summary for the /you/integrations page:
  *   {
  *     strava: { connected, status, last_synced_at, athlete, activity_count },
- *     garmin: { connected, status, last_synced_at, activity_count },
  *   }
  * We never return tokens — only metadata safe for the client.
  */
@@ -59,6 +58,5 @@ export async function GET() {
 
   return NextResponse.json({
     strava: make('strava'),
-    garmin: make('garmin'),
   });
 }

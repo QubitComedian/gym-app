@@ -24,8 +24,8 @@ export default async function IntegrationsPage() {
         <Link href="/you" className="text-tiny text-muted hover:text-ink">← You</Link>
         <h1 className="text-2xl font-bold tracking-tight mt-1">Integrations</h1>
         <p className="text-small text-muted-2 mt-1 leading-relaxed">
-          Connect Strava and Garmin to auto-log activities. Data only flows IN —
-          we never post workouts back to your providers.
+          Connect Strava to auto-log activities. Data only flows IN — we never
+          post workouts back to your provider.
         </p>
       </header>
 
