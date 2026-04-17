@@ -145,27 +145,57 @@ function WhyButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/**
+ * Alternative actions drawer shown beneath the "on deck" card.
+ *
+ * When the user *hasn't* done today's session (`!secondary`) we offer two
+ * actions: (a) log something different they did instead, or (b) ask the
+ * coach to rebalance the plan — the latter dispatches a `coach:open` event
+ * that `CoachChat` listens for, pre-filling the textarea.
+ *
+ * When the user *has* already done a session (`secondary`), the drawer is
+ * labelled "Add another session" and only needs a single logging CTA —
+ * rescheduling doesn't apply, and the calendar is a tab away anyway.
+ */
 function AlternativeDrawer({ today, secondary = false }: { today: string; secondary?: boolean }) {
   const [open, setOpen] = useState(false);
+
+  function openCoachToReschedule() {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('coach:open', {
+      detail: { prefill: "I can't do today's session — please rebalance instead of just deleting it." },
+    }));
+  }
+
   return (
     <section className="rounded-xl bg-panel border border-border">
       <button
         onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
         className="w-full flex items-center justify-between px-4 py-3 text-left"
       >
         <span className="text-small text-muted-2">
           {secondary ? 'Add another session' : "Didn't do this today?"}
         </span>
-        <span className={`text-muted transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+        <span className={`text-muted transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden>›</span>
       </button>
       {open && (
-        <div className="px-4 pb-4 pt-1 animate-fade-in grid grid-cols-2 gap-2">
-          <Link href={`/log?date=${today}`} className="rounded-lg bg-panel-2 border border-border px-3 py-3 text-small text-center">
+        <div className={`px-4 pb-4 pt-1 animate-fade-in ${secondary ? '' : 'grid grid-cols-2 gap-2'}`}>
+          <Link
+            href={`/log?date=${today}`}
+            className="rounded-lg bg-panel-2 border border-border px-3 py-3 text-small text-center block"
+          >
             Log something else
           </Link>
-          <Link href={`/calendar`} className="rounded-lg bg-panel-2 border border-border px-3 py-3 text-small text-center">
-            Open calendar
-          </Link>
+          {!secondary && (
+            <button
+              type="button"
+              onClick={openCoachToReschedule}
+              className="rounded-lg bg-panel-2 border border-border px-3 py-3 text-small text-center"
+            >
+              Reschedule with coach
+            </button>
+          )}
         </div>
       )}
     </section>
