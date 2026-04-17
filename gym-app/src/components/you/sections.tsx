@@ -1,13 +1,26 @@
+/**
+ * /you sections — shared client components rendered across the /you hub
+ * and its sub-routes (/you/profile, /you/training, /you/integrations).
+ *
+ * Why this file exists:
+ *   Before the restructure, every section lived inside a single YouClient.tsx
+ *   as a flat wall. Extracting them here lets each sub-route render only
+ *   the sections relevant to it, without duplicating markup or re-fetching
+ *   the same data from different entry points.
+ *
+ * Each exported Section is a pure presentation component. Server pages
+ * handle data fetching and pass it in as props.
+ */
+
 'use client';
+
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
-import { supabaseBrowser } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
+import { supabaseBrowser } from '@/lib/supabase/client';
 import { useToast } from '@/components/ui/Toast';
 import WindowGlyph from '@/components/ui/WindowGlyph';
-import WeightTracker from '@/components/WeightTracker';
-import IntegrationCards from '@/components/IntegrationCards';
 import {
   KIND_META,
   formatRange,
@@ -19,10 +32,25 @@ import type {
   AvailabilityWindowStrategy,
 } from '@/lib/reconcile/rollForward.pure';
 
-type Phase = { id: string; code: string; name: string; status: string; target_ends_on: string | null; ordinal: number };
-type Exercise = { id: string; name: string; phases: string[]; pref: any | null };
+/* ───────────────────── Shared types ───────────────────── */
 
-type AvailabilitySummary = {
+export type Phase = {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  target_ends_on: string | null;
+  ordinal: number;
+};
+
+export type Exercise = {
+  id: string;
+  name: string;
+  phases: string[];
+  pref: any | null;
+};
+
+export type AvailabilitySummary = {
   todayIso: string;
   activeNow: {
     id: string;
@@ -35,17 +63,23 @@ type AvailabilitySummary = {
   totalActive: number;
 };
 
-type WeeklySlot = { type: string; day_code: string | null };
-type WeeklyPattern = Partial<Record<'SU' | 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA', WeeklySlot>>;
-type PhasePattern = { phase_id: string; pattern: WeeklyPattern };
+export type WeeklySlot = { type: string; day_code: string | null };
+export type WeeklyPattern = Partial<Record<'SU' | 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA', WeeklySlot>>;
+export type PhasePattern = { phase_id: string; pattern: WeeklyPattern };
 
-// DOW ordering for the tile strip. Monday-first reads more naturally for
-// training weeks than Sunday-first.
+export type GoogleStatus = {
+  connected: boolean;
+  expiresAt: string | null;
+  eventCount: number;
+  linkCount: number;
+};
+
+/* ───────────────────── DOW + type styling ───────────────────── */
+
+// Monday-first reads more naturally for training weeks.
 const DOW_ORDER: Array<'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'SU'> = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
-const DOW_LABEL: Record<string, string> = { MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu', FR: 'Fri', SA: 'Sat', SU: 'Sun' };
 const DOW_SHORT: Record<string, string> = { MO: 'M', TU: 'T', WE: 'W', TH: 'T', FR: 'F', SA: 'S', SU: 'S' };
 
-// Pairs with Tailwind tokens already in use elsewhere (bg-panel-2, accent-soft…).
 const TYPE_STYLE: Record<string, { bg: string; ring: string; text: string; icon: string; label: string }> = {
   gym:  { bg: 'bg-accent-soft',     ring: 'ring-accent/40',  text: 'text-accent',  icon: '🏋️', label: 'Gym' },
   run:  { bg: 'bg-ok/15',           ring: 'ring-ok/40',      text: 'text-ok',      icon: '🏃', label: 'Run' },
@@ -61,47 +95,11 @@ function typeStyle(type: string | undefined) {
   return TYPE_STYLE[type] ?? { bg: 'bg-panel-2', ring: 'ring-border', text: 'text-muted', icon: '•', label: type };
 }
 
-export default function YouClient({
-  user, activePhase, phases, google, exercises, weeklyPatterns, availability,
-}: {
-  user: { email: string; id: string };
-  activePhase: Phase | null;
-  phases: Phase[];
-  google: { connected: boolean; expiresAt: string | null; eventCount: number; linkCount: number };
-  exercises: Exercise[];
-  weeklyPatterns: PhasePattern[];
-  availability: AvailabilitySummary;
-}) {
-  return (
-    <main className="max-w-xl mx-auto px-4 pt-5 pb-28 space-y-5">
-      <header className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-tiny text-muted uppercase tracking-wider">You</div>
-          <h1 className="text-2xl font-bold tracking-tight truncate">{user.email.split('@')[0]}</h1>
-          <div className="text-small text-muted-2 mt-0.5 truncate">{user.email}</div>
-        </div>
-        <Avatar email={user.email} />
-      </header>
-
-      <PhaseSection activePhase={activePhase} phases={phases} />
-      <WeightTracker phaseIntent={inferPhaseIntent(activePhase)} />
-      <IntegrationCards />
-      <WeeklyTemplateSection activePhase={activePhase} weeklyPatterns={weeklyPatterns} />
-      <AvailabilitySection availability={availability} />
-      <ExercisesSection exercises={exercises} />
-      <GoogleSection google={google} />
-      <AccountSection />
-    </main>
-  );
-}
-
 /**
- * Infer whether the active phase is a cut / bulk / maintain, used by
- * WeightTracker to color the weekly delta chip. Phase codes follow the
- * pattern "C1" (cut), "B2" (bulk/build), "M1" (maintain); we fall back
- * to scanning the name for keywords for safety.
+ * Infer whether the active phase is a cut / bulk / maintain. Used by
+ * WeightTracker to color the weekly delta chip.
  */
-function inferPhaseIntent(phase: Phase | null): 'cut' | 'bulk' | 'maintain' | null {
+export function inferPhaseIntent(phase: Phase | null): 'cut' | 'bulk' | 'maintain' | null {
   if (!phase) return null;
   const code = (phase.code || '').toUpperCase();
   if (code.startsWith('C')) return 'cut';
@@ -114,18 +112,42 @@ function inferPhaseIntent(phase: Phase | null): 'cut' | 'bulk' | 'maintain' | nu
   return null;
 }
 
-function Avatar({ email }: { email: string }) {
+/* ───────────────────── UserHeader ───────────────────── */
+
+export function UserHeader({
+  email,
+  backHref,
+  title,
+  subtitle,
+}: {
+  email: string;
+  backHref?: string;
+  title?: string;
+  subtitle?: string;
+}) {
   const initial = (email[0] ?? '?').toUpperCase();
   return (
-    <div className="shrink-0 w-12 h-12 rounded-full bg-panel-2 border border-border flex items-center justify-center text-lg font-semibold text-muted-2">
-      {initial}
-    </div>
+    <header className="flex items-center gap-3">
+      <div className="min-w-0 flex-1">
+        {backHref && (
+          <Link href={backHref} className="text-tiny text-muted hover:text-ink">← Back</Link>
+        )}
+        <div className="text-tiny text-muted uppercase tracking-wider mt-0.5">{title ?? 'You'}</div>
+        <h1 className="text-2xl font-bold tracking-tight truncate">{subtitle ?? email.split('@')[0]}</h1>
+        {!subtitle && (
+          <div className="text-small text-muted-2 mt-0.5 truncate">{email}</div>
+        )}
+      </div>
+      <div className="shrink-0 w-12 h-12 rounded-full bg-panel-2 border border-border flex items-center justify-center text-lg font-semibold text-muted-2">
+        {initial}
+      </div>
+    </header>
   );
 }
 
-/* ───────────────────── Phase (demoted — contextual only) ───────────────────── */
+/* ───────────────────── Phase ───────────────────── */
 
-function PhaseSection({ activePhase, phases }: { activePhase: Phase | null; phases: Phase[] }) {
+export function PhaseSection({ activePhase, phases }: { activePhase: Phase | null; phases: Phase[] }) {
   if (!activePhase) {
     return (
       <section className="rounded-xl bg-panel border border-border px-4 py-3">
@@ -179,16 +201,9 @@ function PhaseSection({ activePhase, phases }: { activePhase: Phase | null; phas
   );
 }
 
-/* ───────────────────── Weekly template (P1.1) ───────────────────── */
+/* ───────────────────── Weekly template ───────────────────── */
 
-/**
- * Read-only snapshot of the active phase's weekly template, with seven
- * tinted day tiles (Mon-first) and a summary line. Tapping Edit deep-links
- * to /you/template for the active phase. If the user hasn't kicked off a
- * phase yet, the section explains why it's empty instead of rendering
- * blank tiles — better than an empty grid that looks broken.
- */
-function WeeklyTemplateSection({
+export function WeeklyTemplateSection({
   activePhase,
   weeklyPatterns,
 }: {
@@ -208,8 +223,6 @@ function WeeklyTemplateSection({
 
   const pattern = weeklyPatterns.find((p) => p.phase_id === activePhase.id)?.pattern ?? {};
 
-  // Summary counts by type ("4 gym · 2 run · 1 rest"). Sorted so the most
-  // common type leads, with rest always last for consistency.
   const counts = new Map<string, number>();
   for (const dow of DOW_ORDER) {
     const slot = pattern[dow];
@@ -224,9 +237,8 @@ function WeeklyTemplateSection({
     })
     .map(([type, n]) => `${n} ${typeStyle(type).label.toLowerCase()}`);
 
-  // Today's DOW so we can ring it. UTC-safe via manual parse.
   const now = new Date();
-  const todayDow = DOW_ORDER[(now.getDay() + 6) % 7]; // JS Sun=0 → shift so MO=0
+  const todayDow = DOW_ORDER[(now.getDay() + 6) % 7];
 
   return (
     <section className="rounded-xl bg-panel border border-border p-4">
@@ -272,24 +284,11 @@ function WeeklyTemplateSection({
   );
 }
 
-/* ───────────────────── Availability (P1.3) ───────────────────── */
+/* ───────────────────── Availability ───────────────────── */
 
-/**
- * Entry card for /you/availability. Surfaces the most important
- * window state at a glance:
- *
- *   - A window is active right now → show kind glyph + range + what
- *     the resolved strategy is (bodyweight / rest / hidden)
- *   - No active but something is upcoming → show "X queued" line
- *   - Nothing at all → brief explainer + single CTA
- *
- * Tapping the card (or the chevron) takes the user to the full list
- * where they can add / edit / cancel.
- */
-function AvailabilitySection({ availability }: { availability: AvailabilitySummary }) {
-  const { activeNow, upcomingCount, todayIso } = availability;
+export function AvailabilitySection({ availability }: { availability: AvailabilitySummary }) {
+  const { activeNow, upcomingCount } = availability;
 
-  // ---- Empty state ----------------------------------------------------
   if (!activeNow && upcomingCount === 0) {
     return (
       <section className="rounded-xl bg-panel border border-border p-4">
@@ -314,7 +313,6 @@ function AvailabilitySection({ availability }: { availability: AvailabilitySumma
     );
   }
 
-  // ---- Active + upcoming summary -------------------------------------
   return (
     <Link
       href="/you/availability"
@@ -329,7 +327,7 @@ function AvailabilitySection({ availability }: { availability: AvailabilitySumma
               strategy={activeNow.strategy}
               startsOn={activeNow.starts_on}
               endsOn={activeNow.ends_on}
-              todayIso={todayIso}
+              todayIso={availability.todayIso}
             />
           ) : (
             <div className="mt-1">
@@ -403,10 +401,16 @@ const STATUS_BTN = [
   { v: 'banned', label: '⌀', cls: 'bg-danger/20 text-danger border-danger/40' },
 ];
 
-function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
+export function ExercisesSection({
+  exercises,
+  defaultExpanded = false,
+}: {
+  exercises: Exercise[];
+  defaultExpanded?: boolean;
+}) {
   const [items, setItems] = useState(exercises);
   const [filter, setFilter] = useState('');
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [pending, start] = useTransition();
 
   function setPref(id: string, status: string) {
@@ -430,6 +434,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
       <button
         onClick={() => setExpanded(e => !e)}
         className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left"
+        aria-expanded={expanded}
       >
         <div className="min-w-0">
           <div className="text-tiny text-muted uppercase tracking-wider">Exercise library</div>
@@ -438,7 +443,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
             <span className="text-muted-2"> · {likedCount} liked · {bannedCount} avoided</span>
           </div>
         </div>
-        <span className={`text-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`}>›</span>
+        <span className={`text-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} aria-hidden>›</span>
       </button>
       {expanded && (
         <div className="px-4 pb-4 border-t border-border pt-3 animate-fade-in">
@@ -446,6 +451,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
             placeholder="Filter…"
             value={filter}
             onChange={e => setFilter(e.target.value)}
+            aria-label="Filter exercises"
             className="w-full mb-3 bg-panel-2 border border-border rounded-lg px-3 py-2 text-small"
           />
           <ul className="rounded-lg bg-panel-2/40 border border-border divide-y divide-border overflow-hidden">
@@ -468,6 +474,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
                         onClick={() => setPref(e.id, s.v)}
                         className={`w-8 h-8 rounded-md text-small border ${active ? s.cls : 'bg-panel border-border text-muted opacity-60'}`}
                         title={s.v}
+                        aria-label={`Mark ${e.name} as ${s.v}`}
                       >
                         {s.label}
                       </button>
@@ -487,7 +494,7 @@ function ExercisesSection({ exercises }: { exercises: Exercise[] }) {
 
 /* ───────────────────── Google Calendar ───────────────────── */
 
-function GoogleSection({ google }: { google: { connected: boolean; expiresAt: string | null; eventCount: number; linkCount: number } }) {
+export function GoogleSection({ google }: { google: GoogleStatus }) {
   const [pushDays, setPushDays] = useState(14);
   const [busy, setBusy] = useState<string | null>(null);
   const { push } = useToast();
@@ -536,8 +543,18 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
       {google.connected && (
         <div className="mt-4">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-small font-medium flex-1 min-w-0 truncate">Push planned sessions</span>
-            <input type="number" min={1} max={60} value={pushDays} onChange={e => setPushDays(Number(e.target.value))} className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0" />
+            <label htmlFor="google-push-days" className="text-small font-medium flex-1 min-w-0 truncate">
+              Push planned sessions
+            </label>
+            <input
+              id="google-push-days"
+              type="number"
+              min={1}
+              max={60}
+              value={pushDays}
+              onChange={e => setPushDays(Number(e.target.value))}
+              className="w-16 bg-panel-2 border border-border rounded px-2 py-1 text-small shrink-0"
+            />
             <span className="text-tiny text-muted shrink-0">days</span>
           </div>
           <button
@@ -556,9 +573,9 @@ function GoogleSection({ google }: { google: { connected: boolean; expiresAt: st
   );
 }
 
-/* ───────────────────── Account ───────────────────── */
+/* ───────────────────── Account (sign out) ───────────────────── */
 
-function AccountSection() {
+export function AccountSection() {
   const router = useRouter();
   async function signOut() {
     await supabaseBrowser().auth.signOut();

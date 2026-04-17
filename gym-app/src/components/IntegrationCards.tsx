@@ -1,14 +1,14 @@
 /**
  * IntegrationCards — Strava connect/sync/disconnect tile.
  *
- * Rendered on /you and on /you/integrations. Fetches /api/integrations/status
- * on mount and after any user action. Never handles tokens client-side.
+ * Rendered on /you/integrations (post-IA-restructure). Fetches
+ * /api/integrations/status on mount and after any user action. Never
+ * handles tokens client-side.
  */
 
 'use client';
 
 import { useEffect, useState, useTransition } from 'react';
-import Link from 'next/link';
 import { format, parseISO } from 'date-fns';
 
 type ProviderStatus = {
@@ -70,9 +70,6 @@ export default function IntegrationCards({ compact = false }: { compact?: boolea
           <div className="section-eyebrow">Fitness integrations</div>
           <div className="text-lg font-semibold mt-1">Auto-import activities</div>
         </div>
-        {!compact && (
-          <Link href="/you/integrations" className="text-tiny text-accent hover:underline">Manage →</Link>
-        )}
       </div>
 
       {banner && (
