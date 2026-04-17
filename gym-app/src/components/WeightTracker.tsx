@@ -3,9 +3,13 @@
  *
  * Behavior:
  *   - Mounts and fetches /api/weights?days=180 on first paint
- *   - Today's value (if any) is prefilled as placeholder
- *   - Sparkline uses inline SVG — no dep on recharts so it stays cheap
- *   - A second light-colored line traces the 7-day rolling average
+ *   - A native date picker lets the user log for today OR backdate to any
+ *     day within the last 5 years. Future dates are blocked client-side
+ *     via the input's `max`; the server also rejects them.
+ *   - If the selected date already has an entry, we show a "Replaces
+ *     {x} kg" hint and the button flips from "Log" to "Update".
+ *   - Sparkline uses inline SVG — no dep on recharts so it stays cheap.
+ *   - A second light-colored line traces the 7-day rolling average.
  *   - Shows trend chip: weekly delta (kg) colored against the user's
  *     active phase intent (cut → down is good, bulk → up is good). We
  *     accept `phaseIntent` as an optional prop; when unknown we show
@@ -15,8 +19,12 @@
  *   - Empty history → "Log your first weight" empty state
  *   - Single data point → dot-only chart (no line) with "Log a few more
  *     to see a trend" hint
- *   - Bad input (> 400 or < 20) → inline error, button disabled
- *   - Offline / API failure → error banner with retry
+ *   - Bad input (≤ 20 or ≥ 400) → inline error, button disabled
+ *   - 401 (expired session) → redirect to /login
+ *   - Non-JSON 5xx response → generic "Save failed" without throwing
+ *     on res.json()
+ *   - Offline / network error → error banner with retry
+ *   - Backdating over an existing entry → visible warning before save
  */
 
 'use client';
@@ -49,14 +57,17 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const todayIso = format(new Date(), 'yyyy-MM-dd');
+  const minIso = format(subDays(new Date(), 1825), 'yyyy-MM-dd'); // 5 years back
+  const [selectedDate, setSelectedDate] = useState<string>(todayIso);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
       const res = await fetch('/api/weights?days=180', { cache: 'no-store' });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || 'Failed to load');
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      const j = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(typeof j?.error === 'string' ? j.error : 'Failed to load');
       setRows(j.rows ?? []);
       setAvg7(j.avg7 ?? []);
     } catch (e: any) {
@@ -67,13 +78,23 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
   }
   useEffect(() => { load(); }, []);
 
-  const todayRow = rows.find((r) => r.measured_on === todayIso);
+  const selectedRow = rows.find((r) => r.measured_on === selectedDate);
   const latestRow = rows[rows.length - 1] ?? null;
+  const isBackdating = selectedDate !== todayIso;
 
   async function save() {
     const parsed = parseFloat(inputVal.replace(',', '.'));
-    if (!isFinite(parsed) || parsed < 20 || parsed > 400) {
-      setError('Enter a realistic weight (20–400 kg).');
+    // Bounds match the server/DB constraint (strict > 20 and < 400).
+    if (!isFinite(parsed) || parsed <= 20 || parsed >= 400) {
+      setError('Enter a realistic weight between 20 and 400 kg.');
+      return;
+    }
+    if (selectedDate > todayIso) {
+      setError("Can't log a weight in the future.");
+      return;
+    }
+    if (selectedDate < minIso) {
+      setError('Date is too far in the past.');
       return;
     }
     setSaving(true);
@@ -83,15 +104,24 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          measured_on: todayIso,
+          measured_on: selectedDate,
           weight_kg: parsed,
           note: inputNote.trim() || null,
         }),
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error?.fieldErrors?.weight_kg?.[0] || j?.error || 'Save failed');
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      // .catch(() => ({})) guards against non-JSON bodies (HTML 5xx etc.)
+      // so we never surface "Unexpected token <" to the user.
+      const j = await res.json().catch(() => ({} as any));
+      if (!res.ok) {
+        const msg = typeof j?.error === 'string' ? j.error : 'Save failed. Please try again.';
+        throw new Error(msg);
+      }
       setInputVal('');
       setInputNote('');
+      // Reset the date back to today after a successful log — most entries
+      // are for "now". Users backdating intentionally can repick.
+      setSelectedDate(todayIso);
       await load();
     } catch (e: any) {
       setError(e?.message ?? 'Save failed');
@@ -150,6 +180,28 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
 
       {/* Input row */}
       <div className="space-y-2">
+        {/* Date picker — defaults to today, allows backdating up to 5 years. */}
+        <div className="flex gap-2 items-center">
+          <label htmlFor="weight-date" className="text-tiny text-muted shrink-0">Date</label>
+          <input
+            id="weight-date"
+            type="date"
+            value={selectedDate}
+            min={minIso}
+            max={todayIso}
+            onChange={(e) => setSelectedDate(e.target.value || todayIso)}
+            className="input text-small flex-1"
+          />
+          {isBackdating && (
+            <button
+              type="button"
+              onClick={() => setSelectedDate(todayIso)}
+              className="text-tiny text-muted hover:text-ink underline underline-offset-2 shrink-0"
+            >
+              Today
+            </button>
+          )}
+        </div>
         <div className="flex gap-2">
           <div className="relative flex-1">
             <input
@@ -157,7 +209,14 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
               type="text"
               inputMode="decimal"
               autoComplete="off"
-              placeholder={todayRow ? `Today: ${todayRow.weight_kg} kg` : 'Today in kg (e.g. 72.4)'}
+              aria-label={`Weight in kilograms for ${selectedDate}`}
+              placeholder={
+                selectedRow
+                  ? `${selectedRow.weight_kg} kg logged`
+                  : isBackdating
+                    ? 'Weight in kg (e.g. 72.4)'
+                    : 'Today in kg (e.g. 72.4)'
+              }
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
               className="input pr-10"
@@ -170,7 +229,7 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
             disabled={saving || !inputVal.trim()}
             className="btn btn-primary text-small disabled:opacity-50"
           >
-            {saving ? 'Saving…' : todayRow ? 'Update' : 'Log'}
+            {saving ? 'Saving…' : selectedRow ? 'Update' : isBackdating ? 'Log past' : 'Log'}
           </button>
         </div>
         <div className="relative">
@@ -180,6 +239,7 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
             value={inputNote}
             onChange={(e) => setInputNote(e.target.value)}
             className="input text-small pr-10"
+            aria-label="Weight entry note"
           />
           <div className="absolute inset-y-0 right-1 flex items-center">
             <DictationButton
@@ -189,8 +249,15 @@ export default function WeightTracker({ phaseIntent = null }: Props) {
             />
           </div>
         </div>
+        {/* Row that exists for the selected date → show a replace warning so
+            users don't silently overwrite prior data without realising. */}
+        {selectedRow && !error && (
+          <div className="text-tiny text-muted-2">
+            Saving will replace {selectedRow.weight_kg} kg already logged on {format(parseISO(selectedRow.measured_on), 'MMM d')}.
+          </div>
+        )}
         {error && (
-          <div className="text-tiny text-coral">{error}</div>
+          <div className="text-tiny text-coral" role="alert">{error}</div>
         )}
       </div>
 
